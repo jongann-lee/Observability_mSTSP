@@ -1,0 +1,179 @@
+import random
+import numpy as np
+import networkx as nx
+
+def generate_simple_graph(n_nodes, n_edges):
+    """
+    Generates a random, connected, undirected graph using NetworkX.
+
+    Nodes are assigned a 2D position, and edge weights ('distance')
+    represent the Euclidean distance between them.
+
+    Args:
+        n_nodes (int): The number of nodes in the graph.
+        n_edges (int): The total number of edges in the graph.
+
+    Returns:
+        nx.Graph: The generated NetworkX graph.
+        Returns None if parameters are invalid.
+    """
+    # --- Parameter Validation ---
+    if n_nodes <= 0:
+        print("Error: Number of nodes must be positive.")
+        return None
+    
+    min_edges = n_nodes - 1
+    if n_edges < min_edges:
+        print(f"Error: A connected graph with {n_nodes} nodes needs at least {min_edges} edges.")
+        return None
+
+    max_edges = n_nodes * (n_nodes - 1) // 2
+    if n_edges > max_edges:
+        print(f"Error: Cannot have more than {max_edges} edges in a simple graph with {n_nodes} nodes.")
+        return None
+
+    # 1. Create a graph and assign 2D positions to nodes
+    G = nx.Graph()
+    G.add_nodes_from(range(n_nodes))
+    
+    pos = {i: (random.uniform(0, 1), random.uniform(0, 1)) for i in range(n_nodes)}
+    nx.set_node_attributes(G, pos, 'pos')
+
+    # Helper function to calculate distance
+    def get_distance(n1, n2):
+        p1 = pos[n1]
+        p2 = pos[n2]
+        return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+
+    # 2. Ensure connectivity by creating a random path
+    nodes = list(range(n_nodes))
+    random.shuffle(nodes)
+    for i in range(n_nodes - 1):
+        u, v = nodes[i], nodes[i+1]
+        dist = get_distance(u, v)
+        G.add_edge(u, v, distance=dist)
+
+    # 3. Add remaining edges randomly
+    while G.number_of_edges() < n_edges:
+        u, v = random.sample(range(n_nodes), 2)
+        # Ensure it's not a self-loop or an existing edge
+        if u != v and not G.has_edge(u, v):
+            dist = get_distance(u, v)
+            G.add_edge(u, v, distance=dist)
+    
+    return G
+
+def create_sparse_connected_grid(m, n, node_removal_fraction=0.0, edge_removal_fraction=0.0, target_ratio=0.1, source_node=None, seed=None):
+    """
+    Generates a 2D grid graph, removes a portion of nodes and edges, and ensures
+    the graph remains connected.
+
+    The process involves shuffling a list of edges and attempting to remove
+    a specified fraction of them. An edge is only removed if it is not a
+    "bridge" (i.e., its removal does not disconnect the graph).
+
+    Args:
+        m (int): The number of rows in the grid.
+        n (int): The number of columns in the grid.
+        node_removal_fraction (float): The fraction of total nodes to attempt to remove.
+                                  Must be between 0.0 and 1.0. A higher value
+                                  will result in a sparser graph.
+        edge_removal_fraction (float): The fraction of total edges to attempt to remove.
+                                  Must be between 0.0 and 1.0. A higher value
+                                  will result in a sparser graph.
+        seed (int, optional): A seed for the random number generator to ensure
+                              reproducibility.
+
+    Returns:
+        networkx.Graph: The sparse, yet fully connected, graph.
+    """
+    if not 0.0 <= node_removal_fraction <= 1.0:
+        raise ValueError("node_removal_fraction must be between 0 and 1.")
+
+    if not 0.0 <= edge_removal_fraction <= 1.0:
+        raise ValueError("edge_removal_fraction must be between 0 and 1.")
+
+    if seed is not None:
+        random.seed(seed)
+
+    # 1. Create the complete 2D grid graph
+    G = nx.grid_2d_graph(m, n)
+    
+
+    # 1.1 Remove a fraction of the nodes randomly
+    nodes_to_consider = list(G.nodes())
+    random.shuffle(nodes_to_consider)
+    nodes_to_remove_count = int(len(nodes_to_consider) * node_removal_fraction)
+    nodes_removed_count = 0
+    for node in nodes_to_consider:
+
+        if nodes_removed_count >= nodes_to_remove_count:
+            break
+
+        # Temporarily remove the edge
+        neighbors = list(G.neighbors(node))
+        G.remove_node(node)
+
+        # If the graph has become disconnected, add the node back
+        if not nx.is_connected(G):
+            G.add_node(node)
+            for neighbor in neighbors:
+                G.add_edge(node, neighbor)
+        else:    
+            nodes_removed_count += 1
+
+    # 2. Assign node attributes
+    # 2.1. Set a default type for all nodes
+    node_attributes = {node: {"type": "intermediate"} for node in G.nodes()}
+
+    # 2.2. Select and set the source node
+    if source_node is None:
+        # If no source is specified, pick one randomly
+        source_node = random.choice(list(G.nodes()))
+    node_attributes[source_node]["type"] = "source"
+
+    # 2.3. Select and set the target nodes
+    # Create a pool of potential targets (all nodes except the source)
+    potential_targets = [n for n in G.nodes() if n != source_node]
+    num_targets = int(len(potential_targets) * target_ratio)
+
+    # Randomly sample from the pool
+    target_nodes = random.sample(potential_targets, num_targets)
+    for node in target_nodes:
+        node_attributes[node]["type"] = "target_unreached"
+
+    # 2.4. Apply the attributes to the graph
+    nx.set_node_attributes(G, node_attributes)
+
+    # 3. Determine the target number of edges to remove
+    initial_edge_count = G.number_of_edges()
+    edges_to_consider = list(G.edges())
+    random.shuffle(edges_to_consider)
+    edges_to_remove_count = int(initial_edge_count * edge_removal_fraction)
+    edges_removed_count = 0
+
+    # 4. Iterate through edges and remove them if they don't disconnect the graph
+    for u, v in edges_to_consider:
+        if edges_removed_count >= edges_to_remove_count:
+            break
+
+        # Temporarily remove the edge
+        G.remove_edge(u, v)
+
+        # If the graph has become disconnected, add the edge back
+        if not nx.is_connected(G):
+            G.add_edge(u, v)
+        else:
+            edges_removed_count += 1
+
+    # 5. Add edge weights based on Euclidian distance
+    distances = {}
+    for u, v in G.edges():
+        # The nodes are the coordinates (row, col)
+        dist = np.sqrt((u[0] - v[0])**2 + (u[1] - v[1])**2)
+        distances[(u, v)] = dist
+    
+    nx.set_edge_attributes(G, distances, name="distance")
+    nx.set_edge_attributes(G, False, name="observed_edge")
+
+    return G
