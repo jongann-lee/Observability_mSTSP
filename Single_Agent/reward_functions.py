@@ -9,7 +9,7 @@ def target_and_visibility_reward(env_graph: nx.Graph, input_node, unreached_targ
     2. The combined value of the visible, unexplored edges from that node
     """
 
-    reward_ratio = 1.0 # Weighting factor between target count and visibility
+    reward_ratio = 0.0 # Weighting factor between target count and visibility
 
     if input_node in unreached_targets:
         target_reward = -1 * len(unreached_targets) + 1

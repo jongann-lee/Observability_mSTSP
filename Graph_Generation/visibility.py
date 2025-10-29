@@ -1,4 +1,5 @@
 import numpy as np
+import random
 import networkx as nx
 
 
@@ -172,4 +173,83 @@ def line_of_sight_visibility(input_graph: nx.Graph, visibility_range: int = None
         visibility_mapping[node] = list(visible_edges)
     
     nx.set_node_attributes(input_graph, visibility_mapping, name="visible_edges")
+    return input_graph
+
+
+def two_hop_visibility(input_graph: nx.Graph, num_extended_nodes: int = None, 
+                       extended_fraction: float = 0.1, seed: int = None) -> nx.Graph:
+    """
+    Creates a visibility mapping where most nodes see only their connected edges,
+    but a select number of random nodes can see edges up to 2 hops away.
+
+    Args:
+        input_graph (nx.Graph): The input graph to create visibility mapping for.
+        num_extended_nodes (int, optional): The exact number of nodes to give extended 
+                                           visibility. If None, uses extended_fraction.
+        extended_fraction (float, optional): The fraction of nodes (0.0 to 1.0) that 
+                                            should have extended 2-hop visibility. 
+                                            Defaults to 0.1 (10%).
+        seed (int, optional): Random seed for reproducibility. Defaults to None.
+
+    Returns:
+        nx.Graph: The input graph with a 'visible_edges' node attribute containing
+                 the list of visible edges for each node.
+    """
+    if seed is not None:
+        random.seed(seed)
+    
+    intermediate_nodes_list = [node for node in input_graph.nodes() 
+                  if input_graph.nodes[node].get("type", "intermediate")]
+    
+    # Handle empty graph
+    if not intermediate_nodes_list:
+        nx.set_node_attributes(input_graph, {}, name='visible_edges')
+        return input_graph
+    
+    # Determine how many nodes should have extended visibility
+    if num_extended_nodes is None:
+        num_extended_nodes = max(1, int(len(intermediate_nodes_list) * extended_fraction))
+    else:
+        num_extended_nodes = min(num_extended_nodes, len(intermediate_nodes_list))
+    
+    # Randomly select nodes for extended visibility
+    extended_nodes = set(random.sample(intermediate_nodes_list, num_extended_nodes))
+    
+    visibility_mapping = {}
+    
+    for node in list(input_graph.nodes()):
+        visible_edges = set()
+        
+        if node in extended_nodes:
+            # Extended visibility: see edges up to 2 hops away
+            # Get all neighbors (1-hop)
+            neighbors_1hop = set(input_graph.neighbors(node))
+            
+            # Add all edges connected to this node (1-hop edges)
+            for neighbor in neighbors_1hop:
+                edge = tuple(sorted((node, neighbor)))
+                visible_edges.add(edge)
+            
+            # Add all edges connected to neighbors (2-hop edges)
+            for neighbor in neighbors_1hop:
+                neighbors_2hop = set(input_graph.neighbors(neighbor))
+                for neighbor_2hop in neighbors_2hop:
+                    edge = tuple(sorted((neighbor, neighbor_2hop)))
+                    visible_edges.add(edge)
+        else:
+            # Standard visibility: see only directly connected edges
+            neighbors = input_graph.neighbors(node)
+            for neighbor in neighbors:
+                edge = tuple(sorted((node, neighbor)))
+                visible_edges.add(edge)
+        
+        visibility_mapping[node] = list(visible_edges)
+    
+    # Set the visibility mapping as a node attribute
+    nx.set_node_attributes(input_graph, visibility_mapping, name='visible_edges')
+    
+    # Optionally mark which nodes have extended visibility
+    extended_visibility_flag = {node: (node in extended_nodes) for node in list(input_graph.nodes())}
+    nx.set_node_attributes(input_graph, extended_visibility_flag, name='has_extended_visibility')
+    
     return input_graph

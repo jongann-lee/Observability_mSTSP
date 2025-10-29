@@ -1,6 +1,7 @@
 import random
 import numpy as np
 import networkx as nx
+from scipy.spatial import Delaunay, Voronoi
 
 def generate_simple_graph(n_nodes, n_edges):
     """
@@ -171,6 +172,117 @@ def create_sparse_connected_grid(m, n, node_removal_fraction=0.0, edge_removal_f
     for u, v in G.edges():
         # The nodes are the coordinates (row, col)
         dist = np.sqrt((u[0] - v[0])**2 + (u[1] - v[1])**2)
+        distances[(u, v)] = dist
+    
+    nx.set_edge_attributes(G, distances, name="distance")
+    nx.set_edge_attributes(G, False, name="observed_edge")
+
+    return G
+
+def create_delaunay_graph(n_points=30, target_ratio=0.1, source_node=None, seed=None):
+    """
+    Generates a Delaunay triangulation graph by randomly placing points in a 
+    [0, 1] x [0, 1] square, computing their Voronoi cells, moving points to 
+    cell centers, and connecting points whose Voronoi cells are adjacent.
+
+    Args:
+        n_points (int): The number of points to generate in the square.
+        target_ratio (float): The fraction of nodes to designate as targets.
+                              Must be between 0.0 and 1.0.
+        source_node (int, optional): The index of the source node. If None,
+                                     a random node will be selected.
+        seed (int, optional): A seed for the random number generator to ensure
+                              reproducibility.
+
+    Returns:
+        networkx.Graph: The Delaunay triangulation graph with node attributes
+                        (type, pos) and edge attributes (distance, observed_edge).
+    """
+    if not 0.0 <= target_ratio <= 1.0:
+        raise ValueError("target_ratio must be between 0 and 1.")
+
+    if seed is not None:
+        np.random.seed(seed)
+        random.seed(seed)
+
+    # 1. Generate random points in [0, 1] x [0, 1]
+    points = np.random.rand(n_points, 2)
+
+    # 2. Create Voronoi diagram
+    vor = Voronoi(points)
+
+    # 3. Move points to centers of their Voronoi cells
+    def get_voronoi_cell_center(vor, point_idx):
+        """Calculate the centroid of a Voronoi cell, handling infinite regions"""
+        region_idx = vor.point_region[point_idx]
+        region = vor.regions[region_idx]
+        
+        # Filter out -1 (infinite vertex) and empty regions
+        if -1 in region or len(region) == 0:
+            # For infinite regions, just use the original point
+            return vor.points[point_idx]
+        
+        # Get vertices of the cell
+        vertices = vor.vertices[region]
+        
+        # Calculate centroid
+        centroid = vertices.mean(axis=0)
+        
+        # Clip to [0, 1] bounds to keep within our square
+        centroid = np.clip(centroid, 0, 1)
+        
+        return centroid
+
+    centered_points = np.array([get_voronoi_cell_center(vor, i) for i in range(len(points))])
+
+    # 4. Create Delaunay triangulation with centered points
+    tri = Delaunay(centered_points)
+
+    # 5. Create NetworkX graph from Delaunay triangulation
+    G = nx.Graph()
+
+    # 5.1. Add nodes with their positions
+    for i, point in enumerate(centered_points):
+        G.add_node(i, pos=tuple(point))
+
+    # 5.2. Add edges from Delaunay triangulation
+    for simplex in tri.simplices:
+        # Each simplex is a triangle, so we connect all three vertices
+        G.add_edge(simplex[0], simplex[1])
+        G.add_edge(simplex[1], simplex[2])
+        G.add_edge(simplex[2], simplex[0])
+
+    # 6. Assign node attributes
+    # 6.1. Set a default type for all nodes
+    node_attributes = {node: {"type": "intermediate"} for node in G.nodes()}
+
+    # 6.2. Select and set the source node
+    if source_node is None:
+        # If no source is specified, pick one randomly
+        source_node = random.choice(list(G.nodes()))
+    node_attributes[source_node]["type"] = "source"
+
+    # 6.3. Select and set the target nodes
+    # Create a pool of potential targets (all nodes except the source)
+    potential_targets = [n for n in G.nodes() if n != source_node]
+    num_targets = int(len(potential_targets) * target_ratio)
+
+    # Randomly sample from the pool
+    target_nodes = random.sample(potential_targets, num_targets)
+    for node in target_nodes:
+        node_attributes[node]["type"] = "target_unreached"
+
+    # 6.4. Apply the attributes to the graph
+    nx.set_node_attributes(G, node_attributes)
+
+    # 7. Add edge weights based on Euclidean distance
+    distances = {}
+    for u, v in G.edges():
+        # Get the positions of the nodes
+        pos_u = G.nodes[u]['pos']
+        pos_v = G.nodes[v]['pos']
+        # Calculate Euclidean distance
+        dist = np.sqrt((pos_u[0] - pos_v[0])**2 + (pos_u[1] - pos_v[1])**2)
         distances[(u, v)] = dist
     
     nx.set_edge_attributes(G, distances, name="distance")

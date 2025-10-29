@@ -248,15 +248,20 @@ def k_shortest_diverse_paths(input_graph: nx.Graph, output_graph: nx.Graph, targ
     tau = 0.25
     processed_pairs = set()
 
+    # Get positions for all nodes
+    pos = nx.get_node_attributes(input_graph, 'pos')
+
     # 1. Iterate through each target node as a starting point
     for u in target_nodes:
         neighbors = []
         for v in target_nodes:
             if u == v:
                 continue
-            distance = np.linalg.norm(np.array(u) - np.array(v))
+            # Get positions and calculate distance
+            pos_u = np.array(pos[u])
+            pos_v = np.array(pos[v])
+            distance = np.linalg.norm(pos_u - pos_v)
             neighbors.append((distance, v))
-            # ---------------------------------
 
         neighbors.sort(key=lambda x: x[0])
         closest_neighbors = neighbors[:num_neighbors]
@@ -324,7 +329,13 @@ def create_fully_connected_target_graph(input_graph: nx.Graph) -> nx.Graph:
 
     # Create a new, empty graph to store the result
     target_connected_graph = nx.Graph()
-    target_connected_graph.add_nodes_from(target_nodes)
+    
+    # Copy nodes with their attributes, mapping 'target_unreached' -> 'target'
+    for node in target_nodes:
+        node_attrs = input_graph.nodes[node].copy()
+        if node_attrs.get('type') == 'target_unreached':
+            node_attrs['type'] = 'target'
+        target_connected_graph.add_node(node, **node_attrs)
 
     # target_connected_graph = top3_shortest_top4_closest(input_graph, target_connected_graph, target_nodes)
     target_connected_graph = k_shortest_diverse_paths(input_graph, target_connected_graph, target_nodes)
