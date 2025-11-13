@@ -245,7 +245,7 @@ def k_shortest_diverse_paths(input_graph: nx.Graph, output_graph: nx.Graph, targ
 
     num_neighbors = 4
     k = 3
-    tau = 0.25
+    tau = 0.33 # Diversity parameter for KSPD
     processed_pairs = set()
 
     # Get positions for all nodes
@@ -277,7 +277,9 @@ def k_shortest_diverse_paths(input_graph: nx.Graph, output_graph: nx.Graph, targ
             if not top_k_diverse_paths:
                 continue
 
-            output_graph.add_edge(u, v, distance=top_k_diverse_paths[0]['length'])
+            output_graph.add_edge(u, v, 
+                                  distance=top_k_diverse_paths[0]['length'],
+                                  diverse_paths=top_k_diverse_paths)
 
             weights = []
             num_paths = len(top_k_diverse_paths)
