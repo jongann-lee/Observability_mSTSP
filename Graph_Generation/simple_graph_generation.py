@@ -289,3 +289,124 @@ def create_delaunay_graph(n_points=30, target_ratio=0.1, source_node=None, seed=
     nx.set_edge_attributes(G, False, name="observed_edge")
 
     return G
+
+
+def create_multiple_corridor_graph(n_corridors=5, sort_corridors=False, seed=None):
+    """
+    Generates a graph consisting of multiple parallel corridors connecting a 
+    source node to a single target node. Includes a specific side-node attached
+    to the source.
+
+    Args:
+        n_corridors (int): The number of parallel corridors to generate.
+        sort_corridors (bool): If True, corridors are sorted by length (shortest 
+                               to longest). Defaults to False.
+        seed (int, optional): A seed for the random number generator to ensure
+                              reproducibility.
+
+    Returns:
+        networkx.Graph: The corridor graph with node attributes (type, pos) 
+                        and edge attributes (distance, observed_edge).
+    """
+    if n_corridors < 1:
+        raise ValueError("n_corridors must be at least 1.")
+
+    if seed is not None:
+        np.random.seed(seed)
+        random.seed(seed)
+
+    # 1. Generate corridor lengths
+    # Sample from uniform distribution [0.5, 1.5]
+    corridor_lengths = np.random.uniform(0.5, 1.5, n_corridors)
+    
+    if sort_corridors:
+        corridor_lengths.sort()
+
+    # 2. Initialize Graph
+    G = nx.Graph()
+
+    # 3. Create Special Nodes
+    # We assign fixed indices for clarity: 0 for Source, 1 for Target, 2 for "See All"
+    source_node = 0
+    target_node = 1
+    see_all_node = 2
+
+    # 4. Position Logic (for visualization)
+    # Source is at (0,0). "See All" is to the left. Target is to the far right.
+    # Corridors are stacked vertically.
+    G.add_node(source_node, pos=(0, 0))
+    G.add_node(see_all_node, pos=(-1, 0))
+    
+    # We place the target at x=3
+    G.add_node(target_node, pos=(3, 0))
+
+    # 5. Build Corridors
+    # Calculate vertical spacing
+    y_positions = np.linspace(np.sqrt(n_corridors // 2), -np.sqrt(n_corridors // 2), n_corridors)
+
+    # Keep track of next available node index
+    current_node_idx = 3
+
+    # Dictionary to store logical edge weights to override Euclidean distance later
+    logical_weights = {}
+
+    # Connection: Source -> See All (Arbitrary weight, set to 1.0 for consistency)
+    G.add_edge(source_node, see_all_node)
+    logical_weights[(source_node, see_all_node)] = 1.0
+
+    for i in range(n_corridors):
+        length = corridor_lengths[i]
+        y = y_positions[i]
+        
+        # Create Start and End nodes for this corridor
+        c_start = current_node_idx
+        c_end = current_node_idx + 1
+        current_node_idx += 2
+
+        # 5.1 Add Nodes with Positions
+        # Start node is visually at x=1 (distance 1 from source)
+        G.add_node(c_start, pos=(1, y))
+        # End node is visually at x=1+length
+        G.add_node(c_end, pos=(1 + length, y))
+
+        # 5.2 Add Edges and record logical weights
+        # Source -> Corridor Start (Weight = 1.0)
+        G.add_edge(source_node, c_start)
+        logical_weights[(source_node, c_start)] = 1.0
+
+        # Corridor Start -> Corridor End (Weight = sampled length)
+        G.add_edge(c_start, c_end)
+        logical_weights[(c_start, c_end)] = length
+
+        # Corridor End -> Target (Weight = 1.0)
+        G.add_edge(c_end, target_node)
+        logical_weights[(c_end, target_node)] = 1.0
+
+    # 6. Assign node attributes
+    # 6.1. Set a default type for all nodes
+    node_attributes = {node: {"type": "intermediate"} for node in G.nodes()}
+
+    # 6.2. Set specific types
+    node_attributes[source_node]["type"] = "source"
+    node_attributes[target_node]["type"] = "target_unreached"
+    
+    # Note: The "see_all_node" remains "intermediate" as per instructions
+    # ("Later, I will designate this..."), but it is topologically distinct.
+
+    # 6.3. Apply the attributes to the graph
+    nx.set_node_attributes(G, node_attributes)
+
+    # 7. Add edge weights
+    # Unlike the Delaunay graph which uses pure Euclidean distance, 
+    # this environment requires specific logical weights defined in the prompt.
+    
+    # Ensure undirected consistency in the weights dictionary
+    final_weights = {}
+    for (u, v), w in logical_weights.items():
+        final_weights[(u, v)] = w
+        final_weights[(v, u)] = w
+
+    nx.set_edge_attributes(G, final_weights, name="distance")
+    nx.set_edge_attributes(G, False, name="observed_edge")
+
+    return G

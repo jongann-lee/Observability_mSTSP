@@ -75,7 +75,8 @@ class RepeatedTopK:
 
     def generate_Hamiltonian_path(self):
         """
-        Generates a Hamiltonian path using NetworkX's TSP approximation.
+        Generates the shortest Hamiltonian path using Lin-Kernighan.
+        (Uses brute force if number of nodes is less than 5)
         Since TSP returns a cycle, we remove the last node to get a path.
         
         Args:
@@ -176,6 +177,7 @@ class RepeatedTopK:
     def process_section(self, begin_node, end_node):
         """
         Processes a single edge from the target graph and finds the best path
+        Note: begin_node and end_node must be neighbors on the target graph
         """
 
         # Ensure that the begin_node and the end_node are actually neighbors in the target_graph
@@ -217,6 +219,35 @@ class RepeatedTopK:
         # We don't return the best reward since it's not correct for the overall path
         return best_path
     
+    def alternate_path_online(self, begin_node, end_node):
+        """
+        Given a remaining path to a target, finds an alternate path, 
+        when it turns out that an edge on the original path is blocked
+        """
+
+        if end_node not in self.target_graph.nodes():
+            raise ValueError("End node should be a target node")
+
+        best_reward = -np.inf
+        best_path = None
+
+        # First calculate the reward of the shortest path
+        base_path = nx.shortest_path(self.env_graph, begin_node, end_node, "distance")
+        reward = calculate_path_reward(base_path, self.env_graph.copy(), self.reward_ratio)
+        if reward > best_reward:
+            best_reward = reward
+            best_path = base_path
+
+        # Now consider deviations at each node in the path (except the last)
+        for node in base_path[:-1]:
+            deviated_path = self.deviate_path_at_node(base_path, node)
+            if deviated_path is not None:
+                reward = calculate_path_reward(deviated_path, self.env_graph.copy(), self.reward_ratio)
+                if reward > best_reward:
+                    best_reward = reward
+                    best_path = deviated_path
+
+        return best_path    
 
     def find_best_path(self):
         """

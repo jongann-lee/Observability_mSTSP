@@ -1,6 +1,7 @@
 import numpy as np
 import random
 import networkx as nx
+from typing import List
 
 
 # This module defines the visibility mapping
@@ -177,7 +178,7 @@ def line_of_sight_visibility(input_graph: nx.Graph, visibility_range: int = None
 
 
 def two_hop_visibility(input_graph: nx.Graph, num_extended_nodes: int = None, 
-                       extended_fraction: float = 0.1, seed: int = None) -> nx.Graph:
+                       extended_fraction: float = 0.1, seed: int = None, node_list: list = None) -> nx.Graph:
     """
     Creates a visibility mapping where most nodes see only their connected edges,
     but a select number of random nodes can see edges up to 2 hops away.
@@ -190,6 +191,9 @@ def two_hop_visibility(input_graph: nx.Graph, num_extended_nodes: int = None,
                                             should have extended 2-hop visibility. 
                                             Defaults to 0.1 (10%).
         seed (int, optional): Random seed for reproducibility. Defaults to None.
+        node_list (list, optional): Explicit list of nodes to give extended visibility.
+                                   If provided, overrides num_extended_nodes, 
+                                   extended_fraction, and seed parameters.
 
     Returns:
         nx.Graph: The input graph with a 'visible_edges' node attribute containing
@@ -206,14 +210,28 @@ def two_hop_visibility(input_graph: nx.Graph, num_extended_nodes: int = None,
         nx.set_node_attributes(input_graph, {}, name='visible_edges')
         return input_graph
     
-    # Determine how many nodes should have extended visibility
-    if num_extended_nodes is None:
-        num_extended_nodes = max(1, int(len(intermediate_nodes_list) * extended_fraction))
+    # Determine which nodes should have extended visibility
+    if node_list is not None:
+        # Use provided node list
+        # Validate that all nodes in node_list exist in the graph
+        invalid_nodes = [n for n in node_list if n not in input_graph.nodes()]
+        if invalid_nodes:
+            raise ValueError(f"The following nodes in node_list are not in the graph: {invalid_nodes}")
+        extended_nodes = set(node_list)
     else:
-        num_extended_nodes = min(num_extended_nodes, len(intermediate_nodes_list))
+        # Randomly select nodes for extended visibility
+        if num_extended_nodes is None:
+            num_extended_nodes = max(1, int(len(intermediate_nodes_list) * extended_fraction))
+        else:
+            num_extended_nodes = min(num_extended_nodes, len(intermediate_nodes_list))
+        
+        extended_nodes = set(random.sample(intermediate_nodes_list, num_extended_nodes))
     
-    # Randomly select nodes for extended visibility
-    extended_nodes = set(random.sample(intermediate_nodes_list, num_extended_nodes))
+    # Randomly select nodes for extended visibility if list not given
+    if node_list == None:
+        extended_nodes = set(random.sample(intermediate_nodes_list, num_extended_nodes))
+    else:
+        extended_nodes = set(node_list)
     
     visibility_mapping = {}
     
@@ -227,20 +245,20 @@ def two_hop_visibility(input_graph: nx.Graph, num_extended_nodes: int = None,
             
             # Add all edges connected to this node (1-hop edges)
             for neighbor in neighbors_1hop:
-                edge = tuple(sorted((node, neighbor)))
+                edge = tuple(sorted((int(node), int(neighbor))))
                 visible_edges.add(edge)
             
             # Add all edges connected to neighbors (2-hop edges)
             for neighbor in neighbors_1hop:
                 neighbors_2hop = set(input_graph.neighbors(neighbor))
                 for neighbor_2hop in neighbors_2hop:
-                    edge = tuple(sorted((neighbor, neighbor_2hop)))
+                    edge = tuple(sorted((int(neighbor), int(neighbor_2hop))))
                     visible_edges.add(edge)
         else:
             # Standard visibility: see only directly connected edges
             neighbors = input_graph.neighbors(node)
             for neighbor in neighbors:
-                edge = tuple(sorted((node, neighbor)))
+                edge = tuple(sorted((int(node), int(neighbor))))
                 visible_edges.add(edge)
         
         visibility_mapping[node] = list(visible_edges)

@@ -317,7 +317,7 @@ def solve_tsp_lin_kernighan(
     Chapter 5, Section 5.3.2.1: Lin-Kernighan Neighborhood, Springer, 2023.
     """
     num_vertices = distance_matrix.shape[0]
-    if num_vertices < 4:
+    if num_vertices < 5:
         return _solve_tsp_brute_force(distance_matrix, log_file, verbose)
 
     hamiltonian_cycle, hamiltonian_cycle_distance = setup_initial_solution(
