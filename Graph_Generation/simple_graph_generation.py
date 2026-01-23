@@ -291,7 +291,7 @@ def create_delaunay_graph(n_points=30, target_ratio=0.1, source_node=None, seed=
     return G
 
 
-def create_multiple_corridor_graph(n_corridors=5, sort_corridors=False, seed=None):
+def create_multiple_corridor_graph(n_corridors, sort_corridors=False, seed=None):
     """
     Generates a graph consisting of multiple parallel corridors connecting a 
     source node to a single target node. Includes a specific side-node attached
@@ -366,8 +366,8 @@ def create_multiple_corridor_graph(n_corridors=5, sort_corridors=False, seed=Non
         # 5.1 Add Nodes with Positions
         # Start node is visually at x=1 (distance 1 from source)
         G.add_node(c_start, pos=(1, y))
-        # End node is visually at x=1+length
-        G.add_node(c_end, pos=(1 + length, y))
+        # End node is visually at x=2
+        G.add_node(c_end, pos=(2, y))
 
         # 5.2 Add Edges and record logical weights
         # Source -> Corridor Start (Weight = 1.0)
@@ -409,4 +409,62 @@ def create_multiple_corridor_graph(n_corridors=5, sort_corridors=False, seed=Non
     nx.set_edge_attributes(G, final_weights, name="distance")
     nx.set_edge_attributes(G, False, name="observed_edge")
 
+    return G
+
+def create_occupancy_grid(m, n, nodes_to_remove):
+    """
+    Generates a 2D grid graph with specific nodes removed.
+    Source is always (0,0) and Target is always (m-1, n-1).
+
+    Args:
+        m (int): Number of rows.
+        n (int): Number of columns.
+        nodes_to_remove (list of tuples): List of (r, c) coordinates to remove.
+
+    Returns:
+        networkx.Graph: The grid with nodes removed and attributes set.
+    """
+    # 1. Create the complete 2D grid graph
+    G = nx.grid_2d_graph(m, n)
+    
+    # 2. Remove the specific list of nodes
+    # We use set intersection to avoid errors if you list a node that doesn't exist
+    valid_nodes_to_remove = [node for node in nodes_to_remove if node in G]
+    G.remove_nodes_from(valid_nodes_to_remove)
+
+    # 3. Define Source and Target
+    source_node = (0, 0)
+    target_node = (m - 1, n - 1)
+
+    # --- Safety Checks ---
+    if source_node not in G:
+        raise ValueError(f"Source node {source_node} was removed from the graph!")
+    if target_node not in G:
+        raise ValueError(f"Target node {target_node} was removed from the graph!")
+    
+    # Optional: Ensure the graph is actually solvable (connected start to end)
+    if not nx.has_path(G, source_node, target_node):
+        print("WARNING: The obstacles provided block all paths from Source to Target.")
+
+    # 4. Assign node attributes
+    node_attributes = {node: {"type": "intermediate"} for node in G.nodes()}
+    node_attributes[source_node]["type"] = "source"
+    node_attributes[target_node]["type"] = "target_unreached" # Changed from "target_unreached" for simplicity
+    nx.set_node_attributes(G, node_attributes)
+
+    # 5. Add edge weights (Euclidean distance)
+    distances = {}
+    for u, v in G.edges():
+        dist = np.sqrt((u[0] - v[0])**2 + (u[1] - v[1])**2)
+        distances[(u, v)] = dist
+    
+    nx.set_edge_attributes(G, distances, name="distance")
+
+    # 6. Assign 'pos' attribute (The 2D indices)
+    # The nodes in grid_2d_graph are already (row, col) tuples.
+    # We map node -> node so G.nodes[(r,c)]['pos'] = (r,c)
+    pos_attributes = {node: node for node in G.nodes()}
+    nx.set_node_attributes(G, pos_attributes, name="pos")
+    nx.set_edge_attributes(G, False, name="observed_edge")
+    
     return G

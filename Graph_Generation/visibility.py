@@ -271,3 +271,112 @@ def two_hop_visibility(input_graph: nx.Graph, num_extended_nodes: int = None,
     nx.set_node_attributes(input_graph, extended_visibility_flag, name='has_extended_visibility')
     
     return input_graph
+
+def n_corridor_visibility(input_graph: nx.Graph, see_all_node_idx: int = 2) -> nx.Graph:
+    """
+    Creates a specific visibility mapping intended ONLY for the multiple_corridor_graph.
+    
+    Most nodes have standard 1-hop visibility (they see only the edges they are 
+    directly connected to). The designated "see all" node (default index 2) 
+    has global visibility and can observe every edge in the graph.
+
+    Args:
+        input_graph (nx.Graph): The n-corridor graph to create visibility mapping for.
+        see_all_node_idx (int, optional): The index of the node designated to see 
+                                          everything. Defaults to 2, which matches 
+                                          the creation logic of create_multiple_corridor_graph.
+
+    Returns:
+        nx.Graph: The input graph with a 'visible_edges' node attribute containing
+                  the list of visible edges for each node.
+    """
+    
+    # 1. Pre-calculate the set of ALL edges for the "see all" node
+    all_edges_set = set()
+    for u, v in input_graph.edges():
+        # Sort node indices for consistency in edge representation
+        edge = tuple(sorted((int(u), int(v))))
+        all_edges_set.add(edge)
+
+    visibility_mapping = {}
+
+    for node in list(input_graph.nodes()):
+        visible_edges = set()
+
+        # 2. Check if this is the special "see all" node
+        if node == see_all_node_idx:
+            # This node sees the entire graph structure
+            visible_edges = all_edges_set.copy()
+        
+        # 3. Standard visibility for all other nodes
+        else:
+            neighbors = input_graph.neighbors(node)
+            for neighbor in neighbors:
+                # Add only the edge connecting the node to its neighbor
+                edge = tuple(sorted((int(node), int(neighbor))))
+                visible_edges.add(edge)
+        
+        visibility_mapping[node] = list(visible_edges)
+
+    # 4. Set the visibility mapping as a node attribute
+    nx.set_node_attributes(input_graph, visibility_mapping, name="visible_edges")
+
+    return input_graph
+
+def hill_visibility(input_graph: nx.Graph, hill_nodes: list) -> nx.Graph:
+    """
+    Applies "Hill Node" properties to the graph:
+    1. Hill Nodes have global visibility (can see all edges).
+    2. Edges connecting a Hill Node to a Non-Hill Node have 3x distance (uphill/downhill penalty).
+    
+    Args:
+        input_graph (nx.Graph): The occupancy grid graph.
+        hill_nodes (list): A list of node identifiers (e.g., (r, c) tuples) 
+                           designated as high ground.
+
+    Returns:
+        nx.Graph: The modified graph with updated edge weights and 
+                  a 'visible_edges' node attribute.
+    """
+    
+    # Convert list to set for O(1) lookups
+    hill_set = set(hill_nodes)
+
+    # --- 1. Modify Edge Weights ---
+    # We iterate over edges to find connections between Hill and Non-Hill
+    for u, v, data in input_graph.edges(data=True):
+        u_is_hill = u in hill_set
+        v_is_hill = v in hill_set
+
+        # XOR check: True if exactly one of them is a hill node
+        if u_is_hill ^ v_is_hill:
+            if 'distance' in data:
+                data['distance'] *= 3.0
+
+    # --- 2. Assign Visibility Mapping ---
+    
+    # Pre-calculate the list of ALL edges in a canonical sorted format
+    # Sorting ensures (u, v) is treated identical to (v, u)
+    all_edges_list = []
+    for u, v in input_graph.edges():
+        edge_rep = tuple(sorted((u, v)))
+        all_edges_list.append(edge_rep)
+
+    visibility_mapping = {}
+
+    for node in input_graph.nodes():
+        if node in hill_set:
+            # Hill nodes see everything
+            visibility_mapping[node] = all_edges_list[:] # Copy the full list
+        else:
+            # Standard nodes only see their immediate connections
+            local_edges = []
+            for neighbor in input_graph.neighbors(node):
+                edge_rep = tuple(sorted((node, neighbor)))
+                local_edges.append(edge_rep)
+            visibility_mapping[node] = local_edges
+
+    # Set the attribute
+    nx.set_node_attributes(input_graph, visibility_mapping, name="visible_edges")
+
+    return input_graph

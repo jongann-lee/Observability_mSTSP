@@ -118,3 +118,124 @@ def block_edges_maintain_connectivity(env_graph: nx.Graph, block_ratio: float) -
             blocked_graph.edges[edge[0], edge[1]]['blocked'] = False
     
     return blocked_graph
+
+def block_corridor_to_target(env_graph: nx.Graph, num_remove: int, 
+                             sorted_pick: bool = False, seed: int = None) -> nx.Graph:
+    """
+    Blocks specific edges connecting corridor ends to the target node.
+    
+    Instead of removing the edges from the graph object, this sets a 'blocked'=True 
+    attribute, consistent with the style of block_edges_maintain_connectivity.
+
+    Args:
+        env_graph (nx.Graph): The multiple corridor graph.
+        num_remove (int): The number of corridor-to-target connections to block.
+        sorted_pick (bool, optional): If True, blocks edges starting from the "top" 
+                                      corridor (shortest path if sorted). 
+                                      If False, blocks edges randomly. 
+                                      Defaults to False.
+        seed (int, optional): Random seed for reproducibility.
+
+    Returns:
+        nx.Graph: The graph with specific edges marked as blocked.
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    # Create a copy to avoid modifying the original
+    blocked_graph = env_graph.copy()
+
+    # 1. Identify Target Node
+    # In the create_multiple_corridor_graph function, target is always fixed at index 1
+    target_node = 1
+    
+    if target_node not in blocked_graph:
+        raise ValueError("Target node (1) not found in graph.")
+
+    # 2. Identify Candidate Edges
+    # Find all edges connected to the target. 
+    # In this specific topology, only corridor ends connect to the target.
+    # We store them as tuples (corridor_end_node, target_node)
+    candidate_edges = []
+    for neighbor in blocked_graph.neighbors(target_node):
+        candidate_edges.append((neighbor, target_node))
+
+    total_corridors = len(candidate_edges)
+
+    if num_remove > total_corridors:
+        raise ValueError(f"num_remove ({num_remove}) cannot exceed total corridors ({total_corridors})")
+
+    # 3. Sort Candidates
+    # In the creation function, corridors are created top-to-bottom.
+    # Node indices are assigned sequentially. Therefore, lower neighbor indices
+    # correspond to the 'top' corridors.
+    candidate_edges.sort(key=lambda x: x[0])
+
+    # 4. Select Edges to Block
+    edges_to_block = []
+    
+    if sorted_pick:
+        # Pick the top 'num_remove' edges
+        edges_to_block = candidate_edges[:num_remove]
+    else:
+        # Random sample
+        indices = np.random.choice(len(candidate_edges), size=num_remove, replace=False)
+        edges_to_block = [candidate_edges[i] for i in indices]
+
+    # 5. Apply Blocking
+    # Initialize 'blocked' attribute to False for all edges if not present
+    if not all('blocked' in blocked_graph.edges[e] for e in blocked_graph.edges()):
+        nx.set_edge_attributes(blocked_graph, False, 'blocked')
+
+    for u, v in edges_to_block:
+        # Set the attribute
+        blocked_graph[u][v]['blocked'] = True
+
+    return blocked_graph
+
+def block_specific_edges(env_graph: nx.Graph, edges_to_block: list) -> nx.Graph:
+    """
+    Blocks a specific list of edges in the environment graph.
+    """
+    
+    # 1. Create a copy
+    blocked_graph = env_graph.copy()
+    
+    # 2. Ensure 'blocked' attribute exists
+    if not all('blocked' in blocked_graph.edges[e] for e in blocked_graph.edges()):
+        nx.set_edge_attributes(blocked_graph, False, 'blocked')
+
+    # 3. Apply the blocks
+    for u, v in edges_to_block:
+        if blocked_graph.has_edge(u, v):
+            blocked_graph.edges[u, v]['blocked'] = True
+        else:
+            # Check for reversed edge if not found directly (just in case, though nx handles this)
+            if blocked_graph.has_edge(v, u):
+                blocked_graph.edges[v, u]['blocked'] = True
+            else:
+                pass # Edge doesn't exist (maybe wall removed it)
+
+    # 4. Safety Check: Verify Connectivity
+    
+    # CORRECTED: Only accept (u, v) for standard Graphs
+    def is_traversable(u, v):
+        return not blocked_graph.edges[u, v].get('blocked', False)
+    
+    traversable_view = nx.subgraph_view(blocked_graph, filter_edge=is_traversable)
+
+    # Global Connectivity
+    if not nx.is_connected(traversable_view):
+        num_components = nx.number_connected_components(traversable_view)
+        print(f"WARNING: The blocked edges disconnected the graph into {num_components} components.")
+
+    # Source-Target Connectivity (assuming standard keys)
+    # If your source/target are stored in node attributes, you can look them up dynamically:
+    source = next((n for n, d in blocked_graph.nodes(data=True) if d.get('type') == 'source'), (0,0))
+    target = next((n for n, d in blocked_graph.nodes(data=True) if d.get('type') == 'target'), None)
+
+    if source in traversable_view and target in traversable_view:
+        if not nx.has_path(traversable_view, source, target):
+            print(f"CRITICAL WARNING: No path exists between {source} and {target} after blocking edges!")
+
+    return blocked_graph

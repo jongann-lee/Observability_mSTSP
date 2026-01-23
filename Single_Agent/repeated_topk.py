@@ -145,7 +145,8 @@ class RepeatedTopK:
             return None
         
         # Randomly select a neighbor to deviate to
-        deviation_target = np.random.choice(valid_neighbors)
+        idx = np.random.choice(len(valid_neighbors))
+        deviation_target = valid_neighbors[idx]
         
         # Build the augmented path:
         # 1. Keep the path up to the deviation point

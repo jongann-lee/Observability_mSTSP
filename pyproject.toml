@@ -8,4 +8,5 @@ dependencies = [
     "matplotlib>=3.10.6",
     "networkx>=3.5",
     "scipy>=1.16.2",
+    "tdqm>=0.0.1",
 ]
