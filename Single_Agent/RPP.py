@@ -137,9 +137,16 @@ class ZeroCostRPP:
 
             # 4. Branching
             if best_node is None or best_node == self.g:
-                # Move to goal [cite: 411]
-                self.policy_tree.add_edge((tuple(Y), v), "GOAL", action="move_to_g")
-                print("Added Goal node, we can get to the goal directly")
+                # MOVE TO GOAL PHASE
+                # Instead of just an edge, create a terminal goal node [cite: 173]
+                goal_state = (tuple(Y), self.g)
+                
+                if goal_state not in self.policy_tree:
+                    self.policy_tree.add_node(goal_state, type='terminal_goal')
+                    print(f"Added terminal goal state: {goal_state}")
+                
+                # Add the edge from current state (Y, v) to (Y, g)
+                self.policy_tree.add_edge((tuple(Y), v), goal_state, action="move_to_g")
             else:
                 # Add the chosen leg (from current v to the best observation node u)
                 self.policy_tree.add_node((tuple(Y), best_node), type='observation_point')
