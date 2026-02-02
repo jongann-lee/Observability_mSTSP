@@ -58,20 +58,25 @@ def calculate_path_reward(path, env_graph: nx.Graph, reward_ratio: float) -> flo
     
         
 class RepeatedTopK:
-    """
-    The Repeated TopK method for determining the best path for exploration and target reaching
-    """
-    def __init__(self, reward_ratio: float, env_graph: nx.Graph, target_graph: nx.Graph):
-        """
-        Initializes the RepeatedTopK method with the specified parameters.
+    def __init__(self, reward_ratio: float, env_graph: nx.Graph, target_graph: nx.Graph, 
+                    num_neighbor_samples: int = 1, sample_neighbor_of_neighbor: bool = False):
+            """
+            Initializes the RepeatedTopK method with the specified parameters.
 
-        Args:
-            k (int): The number of top paths to consider at each step.
-            reward_ratio (float): A weighting factor to balance visibility reward and distance penalty.
-        """
-        self.reward_ratio = reward_ratio
-        self.env_graph = env_graph
-        self.target_graph = target_graph
+            Args:
+                reward_ratio (float): A weighting factor to balance visibility reward and distance penalty.
+                env_graph (nx.Graph): The environment graph.
+                target_graph (nx.Graph): The target graph.
+                num_neighbor_samples (int): Number of neighbors to sample for deviation.
+                sample_neighbor_of_neighbor (bool): Whether to sample a random neighbor of the chosen neighbor.
+            """
+            self.reward_ratio = reward_ratio
+            self.env_graph = env_graph
+            self.target_graph = target_graph
+            
+            # New sampling parameters
+            self.num_neighbor_samples = num_neighbor_samples
+            self.sample_neighbor_of_neighbor = sample_neighbor_of_neighbor
 
     def generate_Hamiltonian_path(self):
         """
@@ -120,135 +125,159 @@ class RepeatedTopK:
         return hamiltonian_path
     
     def deviate_path_at_node(self, base_path, node_in_path):
-        """
-        Creating an alternate to the base path by deviating at a certain node_in_path 
-        """
-        # Find the index of the deviation node in the base path
-        if node_in_path not in base_path:
-            return None
-        
-        deviation_idx = base_path.index(node_in_path)
-        
-        # Can't deviate at the end node
-        if deviation_idx == len(base_path) - 1:
-            return None
-        
-        # Get all neighbors of the deviation node
-        neighbors = list(self.env_graph.neighbors(node_in_path))
-        
-        # Filter out neighbors that are already in the base path
-        # (we want to deviate to a node NOT in the original path)
-        valid_neighbors = [n for n in neighbors if n not in base_path]
-        
-        if not valid_neighbors:
-            # No valid deviation possible
-            return None
-        
-        # Randomly select a neighbor to deviate to
-        idx = np.random.choice(len(valid_neighbors))
-        deviation_target = valid_neighbors[idx]
-        
-        # Build the augmented path:
-        # 1. Keep the path up to the deviation point
-        augmented_path = base_path[:deviation_idx + 1]
-        
-        # 2. Add the deviation node
-        augmented_path.append(deviation_target)
-        
-        # 3. Find shortest path from deviation_target back to the original destination
-        destination = base_path[-1]
-        try:
-            return_path = nx.shortest_path(
-                self.env_graph, 
-                source=deviation_target, 
-                target=destination, 
-                weight="distance"
-            )
-            # Add the return path (excluding the first node since it's already added)
-            augmented_path.extend(return_path[1:])
+            """
+            Creates a list of alternate paths by deviating at a certain node_in_path.
+            
+            Returns:
+                list: A list of augmented paths (lists of nodes). Returns empty list if no deviations found.
+            """
+            candidate_paths = []
 
-        except nx.NetworkXNoPath:
-            # No path back to destination
-            return None
-        
-        return augmented_path
+            # Find the index of the deviation node in the base path
+            if node_in_path not in base_path:
+                return []
+            
+            deviation_idx = base_path.index(node_in_path)
+            
+            # Can't deviate at the end node
+            if deviation_idx == len(base_path) - 1:
+                return []
+            
+            destination = base_path[-1]
 
+            # Get all neighbors of the deviation node
+            neighbors = list(self.env_graph.neighbors(node_in_path))
+            
+            # Filter out neighbors that are already in the base path
+            valid_neighbors = [n for n in neighbors if n not in base_path]
+            
+            if not valid_neighbors:
+                return []
+            
+            # Select neighbors to sample (up to num_neighbor_samples)
+            sample_size = min(len(valid_neighbors), self.num_neighbor_samples)
+            chosen_indices = np.random.choice(len(valid_neighbors), size=sample_size, replace=False)
+            chosen_neighbors = [valid_neighbors[i] for i in chosen_indices]
+
+            for neighbor in chosen_neighbors:
+                # --- Strategy 1: Direct Deviation ---
+                # Path: [... -> deviation_node -> neighbor -> ... -> dest]
+                try:
+                    # 1. Keep path up to deviation point
+                    path_1 = base_path[:deviation_idx + 1]
+                    # 2. Add the deviation node
+                    path_1.append(neighbor)
+                    # 3. Find shortest path back
+                    return_path = nx.shortest_path(
+                        self.env_graph, source=neighbor, target=destination, weight="distance"
+                    )
+                    path_1.extend(return_path[1:])
+                    candidate_paths.append(path_1)
+                except nx.NetworkXNoPath:
+                    pass # Skip if no path back
+
+                # --- Strategy 2: Neighbor of Neighbor Deviation ---
+                if self.sample_neighbor_of_neighbor:
+                    # Get neighbors of the current neighbor
+                    nn_candidates = list(self.env_graph.neighbors(neighbor))
+                    # Filter: shouldn't be in base_path and shouldn't be the deviation_node itself
+                    valid_nn = [nn for nn in nn_candidates if nn not in base_path and nn != node_in_path]
+
+                    if valid_nn:
+                        # Pick ONE random neighbor of the neighbor
+                        nn_target_idx = np.random.choice(len(valid_nn), replace=False)
+                        nn_target = valid_nn[nn_target_idx]
+                        
+                        try:
+                            path_2 = base_path[:deviation_idx + 1]
+                            path_2.append(neighbor)
+                            path_2.append(nn_target)
+                            
+                            return_path_nn = nx.shortest_path(
+                                self.env_graph, source=nn_target, target=destination, weight="distance"
+                            )
+                            path_2.extend(return_path_nn[1:])
+                            candidate_paths.append(path_2)
+                        except nx.NetworkXNoPath:
+                            pass
+
+            return candidate_paths
 
 
     def process_section(self, begin_node, end_node):
-        """
-        Processes a single edge from the target graph and finds the best path
-        Note: begin_node and end_node must be neighbors on the target graph
-        """
-
-        # Ensure that the begin_node and the end_node are actually neighbors in the target_graph
-
-        if begin_node not in self.target_graph.nodes() or end_node not in self.target_graph.nodes():
-            raise ValueError("Begin or end node not in target graph.")
-        
-        if not self.target_graph.has_edge(begin_node, end_node):
-            raise ValueError("The specified edge does not exist in the target graph.")
-
-
-        diverse_paths_data = self.target_graph.edges[begin_node, end_node]['diverse_paths']
-        base_paths = [p['path'] for p in diverse_paths_data]
-
-        best_reward = -np.inf
-        best_path = None
-        
-        for path in base_paths:
-
-            # Check if the path is in the REVERSE order
-            if path[0] == end_node and path[-1] == begin_node:
-                path.reverse() # Fix it: [7, ..., 50] -> [50, ..., 7]
+            """
+            Processes a single edge from the target graph and finds the best path
+            """
+            if begin_node not in self.target_graph.nodes() or end_node not in self.target_graph.nodes():
+                raise ValueError("Begin or end node not in target graph.")
             
-            # Calculate the reward for the base path
-            reward = calculate_path_reward(path, self.env_graph.copy(), self.reward_ratio)
-            if reward > best_reward:
-                best_reward = reward
-                best_path = path
+            if not self.target_graph.has_edge(begin_node, end_node):
+                raise ValueError("The specified edge does not exist in the target graph.")
 
-            # Now consider deviations at each node in the path (except the last)
-            for node in path[:-1]:
-                deviated_path = self.deviate_path_at_node(path, node)
-                if deviated_path is not None:
-                    reward = calculate_path_reward(deviated_path, self.env_graph.copy(), self.reward_ratio)
-                    if reward > best_reward:
-                        best_reward = reward
-                        best_path = deviated_path
+            diverse_paths_data = self.target_graph.edges[begin_node, end_node]['diverse_paths']
+            base_paths = [p['path'] for p in diverse_paths_data]
 
-        # We don't return the best reward since it's not correct for the overall path
-        return best_path
-    
-    def alternate_path_online(self, begin_node, end_node):
-        """
-        Given a remaining path to a target, finds an alternate path, 
-        when it turns out that an edge on the original path is blocked
-        """
-
-        if end_node not in self.target_graph.nodes():
-            raise ValueError("End node should be a target node")
-
-        best_reward = -np.inf
-        best_path = None
-
-        # First calculate the reward of the shortest path
-        base_path = nx.shortest_path(self.env_graph, begin_node, end_node, "distance")
-        reward = calculate_path_reward(base_path, self.env_graph.copy(), self.reward_ratio)
-        if reward > best_reward:
-            best_reward = reward
-            best_path = base_path
-
-        # Now consider deviations at each node in the path (except the last)
-        for node in base_path[:-1]:
-            deviated_path = self.deviate_path_at_node(base_path, node)
-            if deviated_path is not None:
-                reward = calculate_path_reward(deviated_path, self.env_graph.copy(), self.reward_ratio)
+            best_reward = -np.inf
+            best_path = None
+            
+            for path in base_paths:
+                # Check if the path is in the REVERSE order
+                if path[0] == end_node and path[-1] == begin_node:
+                    path.reverse()
+                
+                # Calculate the reward for the base path
+                # Note: Assuming calculate_path_reward is available in scope or imported
+                reward = calculate_path_reward(path, self.env_graph.copy(), self.reward_ratio)
                 if reward > best_reward:
                     best_reward = reward
-                    best_path = deviated_path
+                    best_path = path
 
-        return best_path    
+                # Now consider deviations at each node in the path (except the last)
+                for node in path[:-1]:
+                    # deviate_path_at_node now returns a LIST of paths
+                    deviated_paths = self.deviate_path_at_node(path, node)
+                    
+                    for d_path in deviated_paths:
+                        reward = calculate_path_reward(d_path, self.env_graph.copy(), self.reward_ratio)
+                        if reward > best_reward:
+                            best_reward = reward
+                            best_path = d_path
+
+            return best_path
+    
+    def alternate_path_online(self, begin_node, end_node):
+            """
+            Given a remaining path to a target, finds an alternate path.
+            """
+            if end_node not in self.target_graph.nodes():
+                raise ValueError("End node should be a target node")
+
+            best_reward = -np.inf
+            best_path = None
+
+            # First calculate the reward of the shortest path
+            try:
+                base_path = nx.shortest_path(self.env_graph, begin_node, end_node, "distance")
+                reward = calculate_path_reward(base_path, self.env_graph.copy(), self.reward_ratio)
+                if reward > best_reward:
+                    best_reward = reward
+                    best_path = base_path
+                
+                # Now consider deviations at each node
+                for node in base_path[:-1]:
+                    deviated_paths = self.deviate_path_at_node(base_path, node)
+                    
+                    for d_path in deviated_paths:
+                        reward = calculate_path_reward(d_path, self.env_graph.copy(), self.reward_ratio)
+                        if reward > best_reward:
+                            best_reward = reward
+                            best_path = d_path
+
+            except nx.NetworkXNoPath:
+                # Handle case where destination is unreachable
+                return None
+
+            return best_path 
 
     def find_best_path(self):
         """

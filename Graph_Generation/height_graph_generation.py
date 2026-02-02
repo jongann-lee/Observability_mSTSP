@@ -94,6 +94,24 @@ class HeightMapGrid:
             # will simply retain their default height (0) or you can handle that edge case here.
             nx.set_node_attributes(self.G, new_heights, name="height")
 
+    def add_plataeu(self, blob_nodes):
+        """
+        Instead of adding a mountain where the inner nodes get higher and higher
+        in this all of the blob nodes share the same height: 1
+        
+        """
+        if not blob_nodes:
+            return
+        
+        new_heights = {}
+        
+        for node in blob_nodes:
+            new_heights[node] = 1.0
+
+        
+        nx.set_node_attributes(self.G, new_heights, name="height")
+
+
     def calculate_distances(self):
         """
         Calculates edge weights based on:
@@ -111,7 +129,7 @@ class HeightMapGrid:
             base_dist = 1.0 
             
             # Calculate cost
-            weight = base_dist + 2 * abs(h_u - h_v)
+            weight = base_dist + 2.0 * abs(h_u - h_v)
             distances[(u, v)] = weight
             
         # Update the graph edges
@@ -123,43 +141,105 @@ class HeightMapGrid:
 
     def calculate_visibility(self):
             """
-            Calculates recursive visibility based on height.
-            1. You always see your immediate connected edges.
-            2. If a neighbor is STRICTLY LOWER than you, you inherit everything they see.
+            Calculates recursive visibility with cascading flat extensions.
+            
+            Logic:
+            1. Default: You see 1 hop (immediate edges).
+            2. Drop: If you look down a drop, you gain a 'Flat Extension' (Radius 2) on that new level.
+            3. Recursion: If during that extension you drop again, the extension refreshes (Reset to 2).
             """
-            # 1. Base Case: Initialize every node with its immediate incident edges
+            # Pre-compute heights for O(1) lookups
+            heights = {n: self.G.nodes[n]['height'] for n in self.G.nodes()}
+            
             visibility = {}
-            for node in self.G.nodes():
+            all_nodes = list(self.G.nodes())
+
+            for source in all_nodes:
                 visible_edges = set()
-                for neighbor in self.G.neighbors(node):
-                    # Sort the tuple to ensure (A, B) and (B, A) are treated as the same edge
-                    edge = tuple(sorted((node, neighbor)))
-                    visible_edges.add(edge)
-                visibility[node] = visible_edges
-
-            # 2. Sort nodes by height (Ascending)
-            # We process from the bottom of the valleys up to the peaks.
-            # This ensures that when we process a node, all its lower neighbors 
-            # have already finished calculating their full visibility.
-            nodes_by_height = sorted(
-                self.G.nodes(data=True), 
-                key=lambda x: x[1]['height']
-            )
-
-            # 3. Propagate Visibility Uphill
-            for node, data in nodes_by_height:
-                current_height = data['height']
                 
-                for neighbor in self.G.neighbors(node):
-                    neighbor_height = self.G.nodes[neighbor]['height']
-                    
-                    # The Core Logic: Inherit from lower neighbors
-                    if neighbor_height < current_height:
-                        visibility[node].update(visibility[neighbor])
+                # State: {node: max_budget_remaining}
+                # We track the best budget we've arrived at a node with.
+                # If we arrive again with less fuel, we ignore it.
+                # Initialize with -1 so even 0 is "better" (though we only push if >0)
+                max_budget_seen = {n: -1 for n in all_nodes}
+                
+                # Queue: [(node, current_budget)]
+                # Start with budget 0: We see immediate edges, but flat neighbors get budget -1 (stop)
+                queue = [(source, 0)] 
+                max_budget_seen[source] = 0
 
-            # 4. Save as node attribute (convert sets to lists)
-            final_mapping = {k: list(v) for k, v in visibility.items()}
-            nx.set_node_attributes(self.G, final_mapping, name="visible_edges")
+                idx = 0
+                while idx < len(queue):
+                    curr, budget = queue[idx]
+                    idx += 1
+                    
+                    curr_h = heights[curr]
+
+                    # 1. VISIBILITY: If we process 'curr', we see all its attached edges
+                    for neighbor in self.G.neighbors(curr):
+                        # Add edge to set (sorted tuple for uniqueness)
+                        if curr < neighbor:
+                            edge = (curr, neighbor)
+                        else:
+                            edge = (neighbor, curr)
+                        visible_edges.add(edge)
+
+                        # 2. TRANSITION LOGIC
+                        neigh_h = heights[neighbor]
+                        
+                        if neigh_h < curr_h:
+                            # DROP: Recursion Trigger. Reset budget to 2 (The "Flat Extension")
+                            new_budget = 2
+                        elif neigh_h == curr_h:
+                            # FLAT: Consume budget
+                            new_budget = budget - 1
+                        else:
+                            # RISE: Vision blocked
+                            new_budget = -1
+
+                        # 3. PROPAGATION CHECK
+                        # We only continue traversing if we have fuel (>0)
+                        # AND if this is the best fuel state we've seen for this neighbor
+                        if new_budget > 0:
+                            if new_budget > max_budget_seen[neighbor]:
+                                max_budget_seen[neighbor] = new_budget
+                                queue.append((neighbor, new_budget))
+
+                visibility[source] = list(visible_edges)
+
+            nx.set_node_attributes(self.G, visibility, name="visible_edges")
+
+    def remove_edges(self, edges_to_remove):
+            """
+            Manually removes a specific list of edges from the graph AND
+            updates all visibility lists to reflect these removals.
+            """
+            # 1. Standardize edges to remove (sort them for consistent matching)
+            # We use a set for fast O(1) lookups during the scrubbing phase
+            edges_to_remove_set = set()
+            for u, v in edges_to_remove:
+                # Store the sorted version so it matches how we store visible_edges
+                edges_to_remove_set.add(tuple(sorted((u, v))))
+
+            # 2. Remove from the actual Graph structure
+            for u, v in edges_to_remove:
+                if self.G.has_edge(u, v):
+                    self.G.remove_edge(u, v)
+
+            # 3. Scrub these edges from every node's 'visible_edges' list
+            # This ensures no node claims to 'see' an edge that no longer exists
+            for node in self.G.nodes():
+                if "visible_edges" in self.G.nodes[node]:
+                    current_visible = self.G.nodes[node]["visible_edges"]
+                    
+                    # Filter out any edge that is in our removal set
+                    # We check sorted tuples because (u,v) == (v,u) for undirected graphs
+                    updated_visible = [
+                        edge for edge in current_visible 
+                        if tuple(sorted(edge)) not in edges_to_remove_set
+                    ]
+                    
+                    self.G.nodes[node]["visible_edges"] = updated_visible
 
     def get_graph(self):
         """Returns the internal NetworkX graph object."""

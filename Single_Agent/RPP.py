@@ -129,7 +129,7 @@ class ZeroCostRPP:
                 # 3. Calculate Score (Minimal Conditional Entropy + Tie-break with Distance)
                 h_cond = get_conditional_entropy(Y, u, self.realizations, self.env_graph)
                 # Equation 10 logic: score = Expected_Cost + H(X|O)
-                score = (dist_to_u + self.get_expected_cost_to_go(u, Y)) + h_cond
+                score = (dist_to_u + self.get_expected_cost_to_go(u, Y)) + 100 * h_cond
                 
                 if score < min_score:
                     min_score = score
