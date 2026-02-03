@@ -129,7 +129,7 @@ class ZeroCostRPP:
                 # 3. Calculate Score (Minimal Conditional Entropy + Tie-break with Distance)
                 h_cond = get_conditional_entropy(Y, u, self.realizations, self.env_graph)
                 # Equation 10 logic: score = Expected_Cost + H(X|O)
-                score = (dist_to_u + self.get_expected_cost_to_go(u, Y)) + 100 * h_cond
+                score = (dist_to_u + self.get_expected_cost_to_go(u, Y)) + h_cond
                 
                 if score < min_score:
                     min_score = score
@@ -143,14 +143,14 @@ class ZeroCostRPP:
                 
                 if goal_state not in self.policy_tree:
                     self.policy_tree.add_node(goal_state, type='terminal_goal')
-                    print(f"Added terminal goal state: {goal_state}")
+                    # print(f"Added terminal goal state: {goal_state}")
                 
                 # Add the edge from current state (Y, v) to (Y, g)
                 self.policy_tree.add_edge((tuple(Y), v), goal_state, action="move_to_g")
             else:
                 # Add the chosen leg (from current v to the best observation node u)
                 self.policy_tree.add_node((tuple(Y), best_node), type='observation_point')
-                print("Added observation node:", best_node)
+                # print("Added observation node:", best_node)
                 self.policy_tree.add_edge((tuple(Y), v), (tuple(Y), best_node), action="move_to_obs")
 
                 # Partition Y into outcomes based on the 'visible_edges' at best_node
@@ -169,7 +169,7 @@ class ZeroCostRPP:
                     new_state = (tuple(Y_E), best_node)
                     if new_state not in self.policy_tree:
                         self.policy_tree.add_node(new_state)
-                        print("Added new belief state:", new_state)
+                        # print("Added new belief state:", new_state)
                         # The edge represents the "result" of the sensing action
                         self.policy_tree.add_edge((tuple(Y), best_node), new_state, observation_result=outcome)
                         Q.append((Y_E, best_node)) # Continue planning from the new belief

@@ -2,44 +2,102 @@ import numpy as np
 import networkx as nx
 from tqdm import tqdm
 import time
+import itertools
 
-from Graph_Generation.simple_graph_generation import create_occupancy_grid
+from Graph_Generation.height_graph_generation import HeightMapGrid
 from Graph_Generation.target_graph import create_fully_connected_target_graph
-from Graph_Generation.visibility import hill_visibility
 from Graph_Generation.edge_block_generation import block_specific_edges
 from Single_Agent.repeated_topk import RepeatedTopK
-from Single_Agent.VOI import VOITrajectoryManager
+from Single_Agent.RPP import ZeroCostRPP
 
 # Settings
 np.random.seed(42)
-edge_block_prob = 0.75
-num_runs = 100
+edge_block_prob = float(3/18)
+num_runs = 1000
 
-use_shortest_path_agent = True
+use_shortest_path_agent = False
+use_our_agent = False
+use_RPP_agent = True
 
-# Generate the graph (same as in single_agent_blocked.ipynb)
+# Generate the graph (same as in single_agent_height_grid.ipynb)
 
-# We will remove three blobs
-blob1 = [(1,12), (2,12), (2,11), (3,11), (3,10), (4,10)]
-blob2 = [(6,8), (7,7), (6,9), (7,8), (8,7), (8,8), (7,9), (9,6)]
-blob3 = [(7,1), (7,2), (8,1), (8,2), (8,3), (8,4), (9,2), (9,3), (9,4)]
-blob4 = [(7,12), (8,12), (7,13), (8,13)]
-blob5 = [(4,0), (5,0)]
-sef_of_blobs = blob1 + blob2 + blob3 + blob4 + blob5
+# These are the "mountains"
+mountain1 = [(0,11), (1,11), (2,11), (3,11), 
+             (0,10), (1,10), (2,10), (3,10),
+             (0,9),  (1,9),  (2,9),
+             (0,8), (1,8)]
+mountain2 = [(3,7), (4,7), (5,7), 
+             (1,6), (2,6), (3,6), (4,6), (5,6), 
+             (1,5), (2,5), (3,5), (4,5),
+             (1,4), (2,4), (3,4), (4,4),
+             (3,3), (4,3)]
+mountain3 = [(7,5),
+         (6,4), (7,4), (8,4), (9,4), (10,4), 
+         (6,3), (7,3), (8,3), (9,3), (10,3),
+         (6,2), (7,2), (8,2), (9,2),
+         (6,1), (7,1)]
+mountain4 = [(6,10), (7,10), (8,10), (9,10), (10,10),
+             (6,9), (7,9), (8,9), (9,9), (10,9),
+             (7,8), (8,8), (9,8), (10,8),
+             (9,7), (10,7),
+             (9,6), (10,6)]
+set_of_blobs = [mountain1, mountain2, mountain3, mountain4]
 
-# We also define the hill nodes
-hill_nodes = [(2,2), (2,3), (3,2), (3,3)]
+map_generator = HeightMapGrid(m=12, n=12)
+map_generator.add_plataeu(mountain1)
+map_generator.add_plataeu(mountain2)
+map_generator.add_plataeu(mountain3)
+map_generator.add_plataeu(mountain4)
+map_generator.calculate_distances()
+
+# map_generator.calculate_visibility()
+map_generator.calculate_simple_visibility(set_of_blobs)
+
+# Remove the edges that connect the mountain to the valley
+edge_list_1 = [((0,7), (0,8)), ((1,8), (2,8)), ((2,8), (2,9)), ((2,9), (3,9)),
+               ((3,9), (3,10)), ((3,11), (4,11))]
+edge_list_2 = [((3,7), (3,8)), ((4,7), (4,8)), ((5,7), (5,8)),
+               ((5,7), (6,7)), ((5,6), (6,6)), ((5,5), (5,6)),
+                ((4,5), (5,5)), ((4,4), (5,4)), ((4,3), (5,3)),
+                ((4,2), (4,3)), ((3,2), (3,3)), ((2,3), (2,4)),
+                ((1,3), (1,4)), ((0,4), (1,4)), ((0,5), (1,5)),
+                ((0,6), (1,6)), ((1,6), (1,7)), ((2,6), (2,7))]
+edge_list_3 = [((7,5), (8,5)), ((8,4), (8,5)), ((9,4), (9,5)),
+               ((10,4), (10,5)), ((10,4), (11,4)), ((10,3), (11,3)),
+               ((10,2), (10,3)), ((8,1), (8,2)),
+                ((7,0), (7,1)), ((9,1), (9,2)),
+               ((5,1), (6,1)), ((5,2), (6,2)), ((5,3), (6,3)),
+               ((5,4), (6,4)), ((6,4), (6,5)), ((6,5), (7,5))]
+edge_list_4 = [((7,10), (7,11)), ((8,10), (8,11)), ((9,10), (9,11)),
+               ((10,10), (10,11)), ((10,10), (11,10)), ((10,9), (11,9)),
+               ((10,8), (11,8)), ((10,7), (11,7)), ((10,5), (10,6)),
+               ((9,5), (9,6)), ((8,6), (9,6)), ((8,7), (8,8)),
+               ((7,7), (7,8)), ((6,8), (7,8)), ((6,8), (6,9)),
+               ((5,9), (6,9)), ((5,10), (6,10))]
+
+edge_list = edge_list_1 + edge_list_2 + edge_list_3 + edge_list_4
+map_generator.remove_edges(edge_list)
+
+env_graph = map_generator.get_graph()
 
 
-env_graph = create_occupancy_grid(m=14, n=14, nodes_to_remove=sef_of_blobs)
-env_graph = hill_visibility(env_graph, hill_nodes)
 target_graph = create_fully_connected_target_graph(env_graph)
 
+
 # Define the chokepoints (the edges that can be blocked)
-chokepoints_list = [((1,13), (2,13)),
-                    ((5,9), (5,10)),
-                    ((8,5), (9,5)),
-                    ((7,0), (8,0))]
+# chokepoints_list = [((7,11), (8,11)), ((8,11), (9,11)), ((9,11), (10,11)),
+#                     ((11,7), (11,8)), ((11,8), (11,9)), ((11,9), (11,10)),
+#                     ((8,5), (8,6)), ((8,5), (9,5)), ((9,5), (10,5)), 
+#                     ((0,4), (0,5)), ((0,5), (0,6)), ((0,6), (0,7)),
+#                     ((5,3), (5,4)), ((5,4), (5,5)), ((5,5), (6,5)),
+#                     ((11,2), (11,3)), ((11,3), (11,4)), ((11,4), (11,5))]
+
+chokepoints_list = [((9,11), (10,11)),
+                    ((11,9), (11,10)),
+                    ((8,5), (9,5)), 
+                    ((0,6), (0,7)),
+                    ((5,5), (6,5)),
+                    ((11,4), (11,5))]
 
 # Pre calculate shortest path and the Hamiltonian target path(trivial for now)
 path_generator = RepeatedTopK(reward_ratio = 1.0, env_graph=env_graph, target_graph=target_graph)
@@ -73,14 +131,16 @@ for run_idx in tqdm(range(num_runs)):
     for i, (u, v) in enumerate(chokepoints_list):
         if RNG[i] < edge_block_prob:
             edges_to_remove.append((u, v))
-            print(f" Blocking edge{i}")
-    # Skip run if all chokepoints are blocked (ensuring graph connectivity)
-    if len(edges_to_remove) == len(chokepoints_list):
-        continue
+            # print(f" Blocking edge{i}")
+
 
     # Create the blocked env graph (real env) and remove the blocked edges
     blocked_env_graph = block_specific_edges(env_graph, edges_to_remove)
     blocked_env_graph.remove_edges_from(edges_to_remove)
+
+    # Skip run if the goal is unreachable
+    if not nx.has_path(blocked_env_graph, (0,0), (11,11)):
+        continue
 
     # Update the visible_edges for all nodes to reflect the removed edges
     for node in blocked_env_graph.nodes():
@@ -120,13 +180,13 @@ for run_idx in tqdm(range(num_runs)):
                     if env_graph1.has_edge(u, v):
                         # print(f"From {current_node}, observed edge ({u}, {v}) is blocked. Removing from graph.")
                         env_graph1.remove_edge(u, v)
-                        # Update the visibility mapping as well
-                        for node in env_graph1.nodes():
-                            if "visible_edges" in env_graph1.nodes[node]:
-                                current_visible = env_graph1.nodes[node]["visible_edges"]
-                                # Remove any blocked edges from the visible_edges set
-                                updated_visible = set(current_visible) - blocked_edges
-                                env_graph1.nodes[node]["visible_edges"] = list(updated_visible)
+                # Update the visibility mapping as well
+                for node in env_graph1.nodes():
+                    if "visible_edges" in env_graph1.nodes[node]:
+                        current_visible = env_graph1.nodes[node]["visible_edges"]
+                        # Remove any blocked edges from the visible_edges set
+                        updated_visible = set(current_visible) - blocked_edges
+                        env_graph1.nodes[node]["visible_edges"] = list(updated_visible)
                 
                 # Check if any blocked edge is in our current path
                 path_edges = [(path_1[i], path_1[i+1]) for i in range(index, len(path_1) - 1)]
@@ -161,6 +221,184 @@ for run_idx in tqdm(range(num_runs)):
             index += 1
 
         path_length_list.append(total_travel_distance)
+
+    elif use_our_agent:
+        env_graph2 = env_graph.copy() # Agent's world model (doesn't know any edges are blocked)
+        path2_generator = RepeatedTopK(reward_ratio = 1.0, env_graph=env_graph2, target_graph=target_graph,
+                               num_neighbor_samples=2, sample_neighbor_of_neighbor=True)
+
+        path_2 = path2_generator.find_best_path() # Start with the best path
+        target_nodes = hamiltonian_target_path.copy()  # All target nodes
+        
+
+        current_node = path_2[0]
+        next_target_index = 1 # since 0 is the source
+        index = 0
+        total_travel_distance = 0.0
+
+        while index < len(path_2) - 1:
+            next_node = path_2[index + 1]
+
+            # Update the next_target_index 
+            if current_node == target_nodes[next_target_index]:
+                next_target_index += 1
+            
+            # Check out all the observable edges
+            observable_edges = set(blocked_env_graph.nodes[current_node]["visible_edges"]) # From the actual blocked env graph
+            assumed_observable_edges = set(env_graph2.nodes[current_node]["visible_edges"]) # From the agent's world model 
+            blocked_edges = assumed_observable_edges - observable_edges
+            
+            if len(blocked_edges) > 0:
+                # Remove blocked edges from agent's world model
+                for edge in blocked_edges:
+                    u, v = edge
+                    if env_graph2.has_edge(u, v):
+                        # print(f"From {current_node}, observed edge ({u}, {v}) is blocked. Removing from graph.")
+                        env_graph2.remove_edge(u, v)
+                # Update the visibility mapping as well
+                for node in env_graph2.nodes():
+                    if "visible_edges" in env_graph2.nodes[node]:
+                        current_visible = env_graph2.nodes[node]["visible_edges"]
+                        # Remove any blocked edges from the visible_edges set
+                        updated_visible = set(current_visible) - blocked_edges
+                        env_graph2.nodes[node]["visible_edges"] = list(updated_visible)
+                
+                # Check if any blocked edge is in our current path
+                path_edges = [(path_2[i], path_2[i+1]) for i in range(index, len(path_2) - 1)]
+
+                # Create a set that includes both directions of blocked edges
+                blocked_edges_both_directions = set()
+                for u, v in blocked_edges:
+                    blocked_edges_both_directions.add((u, v))
+                    blocked_edges_both_directions.add((v, u))
+                
+                if any(edge in blocked_edges_both_directions for edge in path_edges):
+                    # print(f"Blocked edge detected in planned path. Recalculating entire remaining path...")
+                    
+                    # Replan through ALL remaining targets
+                    remaining_targets = target_nodes[next_target_index:]
+                    new_path = [current_node]
+                    
+                    for target in remaining_targets:
+                        segment = path2_generator.alternate_path_online(new_path[-1], target)
+                        new_path.extend(segment[1:])  # Append segment excluding the first node (already in new_path)
+                    
+                    # Replace the rest of path_2 with the new path
+                    path_2 = path_2[:index + 1] + new_path[1:]
+
+            # Get the next node from the (possibly updated) path
+            next_node = path_2[index + 1]
+            
+            # Now that we have a traversable path, just go to the next node in path
+            # print(f"Moving from {current_node} to {next_node}")
+            total_travel_distance += env_graph.edges[current_node, next_node]["distance"]
+            current_node = next_node
+            index += 1
+
+        path_length_list.append(total_travel_distance)
+
+    elif use_RPP_agent:
+        env_graph4 = env_graph.copy() # Agent's world model (doesn't know any edges are blocked)
+
+        # Generate all 2^n possible realizations for the n chokepoints
+        realizations = []
+        chokepoints = chokepoints_list
+                
+        source_node = (0,0)
+        target_node = (11,11)
+        edge_block_prob = edge_block_prob
+
+        for bits in itertools.product([0, 1], repeat=len(chokepoints)):
+            # 0 = open, 1 = blocked
+            blocked_in_this_world = [chokepoints[i] for i, bit in enumerate(bits) if bit == 1]
+            
+            # Calculate probability of this specific world occurring
+            prob = 1.0
+            for bit in bits:
+                prob *= edge_block_prob if bit == 1 else (1 - edge_block_prob)
+            
+            # The set of free edges is all edges in env_graph MINUS the blocked ones
+            all_edges = set(env_graph.edges())
+            free_edges = all_edges - set(blocked_in_this_world)
+            
+            realizations.append({
+                'prob': prob,
+                'edges': free_edges,
+                'blocked': set(blocked_in_this_world)
+            })
+        
+
+        path4_generator = ZeroCostRPP(env_graph=env_graph4,
+                                    realizations=realizations,
+                                    start_node=source_node,
+                                    goal_node=target_node)
+
+        policy_tree = path4_generator.plan()
+
+        # Y is the set of indices of all realizations [cite: 119, 159]
+        current_belief_indices = tuple(range(len(realizations)))
+        current_tree_node = (current_belief_indices, source_node)
+        current_node = source_node
+
+        agent4_travel_distance = 0.0
+
+        while True:
+            node_data = policy_tree.nodes.get(current_tree_node, {})
+            
+            # 1. Check for Terminal States [cite: 173, 408]
+            if node_data.get('type') == 'terminal_no_goal':
+                # print(f"RPP Determination: Goal is unreachable in this environment.")
+                break
+            
+            if current_node == target_node:
+                # print(f"Goal Reached! Total distance: {agent4_travel_distance}")
+                break
+
+            # 2. Get the next tree action [cite: 170, 250]
+            successors = list(policy_tree.successors(current_tree_node))
+            if not successors:
+                break
+            
+            next_tree_state = successors[0]
+            target_env_vertex = next_tree_state[1] 
+
+            # 3. Step-by-step traversal along the "Leg" [cite: 235, 262]
+            leg_path = nx.shortest_path(blocked_env_graph, current_node, target_env_vertex, weight="distance")
+            
+            for next_step in leg_path[1:]:
+                distance = blocked_env_graph.edges[current_node, next_step]["distance"]
+                # print(f"RPP Agent moving from {current_node} to {next_step}, distance: {distance:.2f}")
+                agent4_travel_distance += distance
+                current_node = next_step
+
+            # 4. Perform Observation and Transition Belief [cite: 152, 252]
+            # If we aren't at the goal yet, we must update our belief based on sensors [cite: 153, 231]
+            if current_node != target_node:
+                visible_here = env_graph.nodes[current_node].get("visible_edges", [])
+                actual_outcome = tuple(sorted(
+                    [e for e in visible_here if blocked_env_graph.has_edge(*e)],
+                    key=lambda x: (x[0], x[1])
+                ))
+                
+                # Look for the specific branch that matches what we just saw 
+                found_next_belief = False
+                for potential_next_belief in policy_tree.successors(next_tree_state):
+                    edge_data = policy_tree.get_edge_data(next_tree_state, potential_next_belief)
+                    if edge_data.get('observation_result') == actual_outcome:
+                        current_tree_node = potential_next_belief # Jump to the new state 
+                        found_next_belief = True
+                        break
+                
+                if not found_next_belief:
+                    # print(f"Warning: Outcome {actual_outcome} at {current_node} is inconsistent with policy.")
+                    break
+            else:
+                # Final safety check: if we are physically at target_node, we are done
+                # print(f"Goal Reached! Total distance: {agent4_travel_distance}")
+                break
+
+        path_length_list.append(agent4_travel_distance)
+
         
     end_time = time.time()
     runtimes.append(end_time - start_time)

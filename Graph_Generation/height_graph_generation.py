@@ -208,7 +208,69 @@ class HeightMapGrid:
                 visibility[source] = list(visible_edges)
 
             nx.set_node_attributes(self.G, visibility, name="visible_edges")
+    
+    def calculate_simple_visibility(self, blobs):
+            """
+            Simplified visibility for testing.
+            
+            Logic:
+            1. Nodes NOT in a blob see only their immediate edges (1-hop).
+            2. Nodes IN a blob see the 'Induced Subgraph' of the 'Covering Blob'.
+            - The 'Covering Blob' (Halo) is the set of all nodes in the blob 
+                PLUS all their 8-connected neighbors (including diagonals).
+            - Visibility = All graph edges where BOTH endpoints are in this Halo.
+            
+            Args:
+                blobs (list of list of tuples): A list of blobs, where each blob 
+                                                is a list of (r, c) coordinates.
+            """
+            # 1. Base Case: Initialize basic 1-hop visibility for everyone
+            visibility = {}
+            for node in self.G.nodes():
+                visible_edges = set()
+                for neighbor in self.G.neighbors(node):
+                    edge = tuple(sorted((node, neighbor)))
+                    visible_edges.add(edge)
+                visibility[node] = visible_edges
 
+            # 2. Process each blob
+            for blob_nodes in blobs:
+                # A. Identify the 'Halo' (The Covering Set of Nodes)
+                # The Halo includes the blob nodes + all 8-connected neighbors
+                halo_nodes = set()
+                
+                for r, c in blob_nodes:
+                    # Check all 8 neighbors + self (dr, dc in -1, 0, 1)
+                    for dr in [-1, 0, 1]:
+                        for dc in [-1, 0, 1]:
+                            nr, nc = r + dr, c + dc
+                            
+                            # We only add it if it actually exists in the grid
+                            if (nr, nc) in self.G:
+                                halo_nodes.add((nr, nc))
+
+                # B. Collect all edges strictly contained within the Halo
+                # (The Induced Subgraph of the Halo)
+                halo_edges = set()
+                
+                for u in halo_nodes:
+                    # Check actual graph neighbors (4-connected)
+                    for v in self.G.neighbors(u):
+                        # Only add the edge if the neighbor is ALSO in the halo
+                        if v in halo_nodes:
+                            edge = tuple(sorted((u, v)))
+                            halo_edges.add(edge)
+
+                # C. Broadcast this visibility to the nodes inside the original blob
+                for node in blob_nodes:
+                    if node in self.G:
+                        # Update (union) with the new halo edges
+                        visibility[node].update(halo_edges)
+
+            # 3. Save attributes to the graph
+            final_mapping = {k: list(v) for k, v in visibility.items()}
+            nx.set_node_attributes(self.G, final_mapping, name="visible_edges")
+            
     def remove_edges(self, edges_to_remove):
             """
             Manually removes a specific list of edges from the graph AND

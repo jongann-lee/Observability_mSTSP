@@ -106,7 +106,7 @@ class RepeatedTopK:
         distance_matrix = nx.to_numpy_array(self.target_graph, nodelist=node_list, weight='distance', nonedge=np.inf)
         tsp_cycle, _ = solve_tsp_lin_kernighan(distance_matrix)
         tsp_cycle = [node_list[i] for i in tsp_cycle]
-        print(f"TSP Cycle: {tsp_cycle}")
+        # print(f"TSP Cycle: {tsp_cycle}")
         
         if len(tsp_cycle) > 1 and tsp_cycle[0] == tsp_cycle [-1]:
             # If it's a cycle, remove the last node to make it a path
@@ -293,7 +293,7 @@ class RepeatedTopK:
             begin_node = base_Hamiltonian_path[i]
             end_node = base_Hamiltonian_path[i + 1]
 
-            print(f"Processing section from {begin_node} to {end_node}")
+            # print(f"Processing section from {begin_node} to {end_node}")
 
             section_best_path = self.process_section(begin_node, end_node)
 
@@ -316,8 +316,8 @@ class RepeatedTopK:
             else:
                 original_path.extend(edge_path)
         original_path_reward = calculate_path_reward(original_path, self.env_graph.copy(), self.reward_ratio)
-        print(f"Original Hamiltonian Path Reward: {original_path_reward}")
-        print(f"Best Path Reward: {best_path_reward}")
+        # print(f"Original Hamiltonian Path Reward: {original_path_reward}")
+        # print(f"Best Path Reward: {best_path_reward}")
 
         return best_path
             
