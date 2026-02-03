@@ -11,13 +11,12 @@ from Single_Agent.repeated_topk import RepeatedTopK
 from Single_Agent.RPP import ZeroCostRPP
 
 # Settings
-np.random.seed(42)
 edge_block_prob = float(3/18)
 num_runs = 1000
 
-use_shortest_path_agent = False
+use_shortest_path_agent = True
 use_our_agent = False
-use_RPP_agent = True
+use_RPP_agent = False
 
 # Generate the graph (same as in single_agent_height_grid.ipynb)
 
@@ -85,19 +84,19 @@ target_graph = create_fully_connected_target_graph(env_graph)
 
 
 # Define the chokepoints (the edges that can be blocked)
-# chokepoints_list = [((7,11), (8,11)), ((8,11), (9,11)), ((9,11), (10,11)),
-#                     ((11,7), (11,8)), ((11,8), (11,9)), ((11,9), (11,10)),
-#                     ((8,5), (8,6)), ((8,5), (9,5)), ((9,5), (10,5)), 
-#                     ((0,4), (0,5)), ((0,5), (0,6)), ((0,6), (0,7)),
-#                     ((5,3), (5,4)), ((5,4), (5,5)), ((5,5), (6,5)),
-#                     ((11,2), (11,3)), ((11,3), (11,4)), ((11,4), (11,5))]
+chokepoints_list = [((7,11), (8,11)), ((8,11), (9,11)), ((9,11), (10,11)),
+                    ((11,7), (11,8)), ((11,8), (11,9)), ((11,9), (11,10)),
+                    ((8,5), (8,6)), ((8,5), (9,5)), ((9,5), (10,5)), 
+                    ((0,4), (0,5)), ((0,5), (0,6)), ((0,6), (0,7)),
+                    ((5,3), (5,4)), ((5,4), (5,5)), ((5,5), (6,5)),
+                    ((11,2), (11,3)), ((11,3), (11,4)), ((11,4), (11,5))]
 
-chokepoints_list = [((9,11), (10,11)),
-                    ((11,9), (11,10)),
-                    ((8,5), (9,5)), 
-                    ((0,6), (0,7)),
-                    ((5,5), (6,5)),
-                    ((11,4), (11,5))]
+# chokepoints_list = [((9,11), (10,11)),
+#                     ((11,9), (11,10)),
+#                     ((8,5), (9,5)), 
+#                     ((0,6), (0,7)),
+#                     ((5,5), (6,5)),
+#                     ((11,4), (11,5))]
 
 # Pre calculate shortest path and the Hamiltonian target path(trivial for now)
 path_generator = RepeatedTopK(reward_ratio = 1.0, env_graph=env_graph, target_graph=target_graph)
@@ -123,6 +122,9 @@ runtimes = []
 # Main repeating run loop
 for run_idx in tqdm(range(num_runs)):
 
+    # Set the seed here so that each test gets the same samples of the edge block distribution
+    np.random.seed(42+run_idx)
+    
     start_time = time.time()
 
     # Block edges
