@@ -1,8 +1,19 @@
+import sys
+import os
+
+project_root = os.path.abspath(os.path.join(os.getcwd(), ".."))
+
+# Add it to sys.path if it isn't there already
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
+
 import numpy as np
 import networkx as nx
 
 from Single_Agent.reward_functions import visibility_reward
 from Single_Agent.lin_kernighan_tsp import solve_tsp_lin_kernighan
+from Graph_Generation.target_graph import stochastic_accumulated_blockage_path
 
 def calculate_path_reward(path, env_graph: nx.Graph, reward_ratio: float) -> float:
     """
@@ -202,6 +213,33 @@ class RepeatedTopK:
                             pass
 
             return candidate_paths
+    
+    def deviate_path_stochastic_block(self, base_path):
+        """
+        Use the stochastic blocking strategy to generate candidate paths between two targets
+
+        Returns: 
+            list of potential paths between two targets
+        """
+        
+        candidate_paths = []
+
+        # Sampling hyperparameters
+        recursions = 4
+        num_obstacles = 2
+        obstacle_hop = 1
+        penalty_factor = 1.5
+
+        candidate_paths = stochastic_accumulated_blockage_path(self.env_graph,
+                                                               source = base_path[0],
+                                                               target = base_path[-1],
+                                                               recursions=recursions,
+                                                               num_obstacles_per_path=num_obstacles,
+                                                               obstacle_hop=obstacle_hop,
+                                                               penalty_factor=penalty_factor)
+        
+        return candidate_paths
+
 
 
     def process_section(self, begin_node, end_node):
@@ -215,35 +253,35 @@ class RepeatedTopK:
                 raise ValueError("The specified edge does not exist in the target graph.")
 
             diverse_paths_data = self.target_graph.edges[begin_node, end_node]['diverse_paths']
-            base_paths = [p['path'] for p in diverse_paths_data]
+            shortest_path = diverse_paths_data[0]
 
             best_reward = -np.inf
             best_path = None
             
-            for path in base_paths:
-                # Check if the path is in the REVERSE order
-                if path[0] == end_node and path[-1] == begin_node:
-                    path.reverse()
+            # Check if the path is in the REVERSE order
+            if shortest_path[0] == end_node and shortest_path[-1] == begin_node:
+                shortest_path.reverse()
+            
+            # Calculate the reward for the base path
+            # Note: Assuming calculate_path_reward is available in scope or imported
+            reward = calculate_path_reward(shortest_path, self.env_graph.copy(), self.reward_ratio)
+            if reward > best_reward:
+                best_reward = reward
+                best_path = shortest_path
+
+            # Now get the list of alternate paths
                 
-                # Calculate the reward for the base path
-                # Note: Assuming calculate_path_reward is available in scope or imported
-                reward = calculate_path_reward(path, self.env_graph.copy(), self.reward_ratio)
+            deviated_paths = self.deviate_path_stochastic_block(shortest_path)
+            
+            for d_path in deviated_paths:
+                reward = calculate_path_reward(d_path, self.env_graph.copy(), self.reward_ratio)
                 if reward > best_reward:
                     best_reward = reward
-                    best_path = path
-
-                # Now consider deviations at each node in the path (except the last)
-                for node in path[:-1]:
-                    # deviate_path_at_node now returns a LIST of paths
-                    deviated_paths = self.deviate_path_at_node(path, node)
-                    
-                    for d_path in deviated_paths:
-                        reward = calculate_path_reward(d_path, self.env_graph.copy(), self.reward_ratio)
-                        if reward > best_reward:
-                            best_reward = reward
-                            best_path = d_path
+                    best_path = d_path
 
             return best_path
+    
+
     
     def alternate_path_online(self, begin_node, end_node):
             """
@@ -310,7 +348,7 @@ class RepeatedTopK:
         for i in range(len(base_Hamiltonian_path) - 1):
             begin_node = base_Hamiltonian_path[i]
             end_node = base_Hamiltonian_path[i + 1]
-            edge_path = self.target_graph.edges[begin_node, end_node]['diverse_paths'][0]['path']
+            edge_path = self.target_graph.edges[begin_node, end_node]['diverse_paths'][0]
             if len(original_path) > 0 and original_path[-1] == edge_path[0]:
                 original_path.extend(edge_path[1:])
             else:
