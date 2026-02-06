@@ -11,11 +11,11 @@ from Single_Agent.repeated_topk import RepeatedTopK
 from Single_Agent.RPP import ZeroCostRPP
 
 # Settings
-edge_block_prob = float(3/18)
+edge_block_prob = float(9/18)
 num_runs = 1000
 
-use_shortest_path_agent = True
-use_our_agent = False
+use_shortest_path_agent = False
+use_our_agent = True
 use_RPP_agent = False
 
 # Generate the graph (same as in single_agent_height_grid.ipynb)
@@ -80,7 +80,7 @@ map_generator.remove_edges(edge_list)
 env_graph = map_generator.get_graph()
 
 
-target_graph = create_fully_connected_target_graph(env_graph)
+target_graph = create_fully_connected_target_graph(env_graph, recursions=3, num_obstacles=2, obstacle_hop=1)
 
 
 # Define the chokepoints (the edges that can be blocked)
@@ -226,8 +226,7 @@ for run_idx in tqdm(range(num_runs)):
 
     elif use_our_agent:
         env_graph2 = env_graph.copy() # Agent's world model (doesn't know any edges are blocked)
-        path2_generator = RepeatedTopK(reward_ratio = 1.0, env_graph=env_graph2, target_graph=target_graph,
-                               num_neighbor_samples=2, sample_neighbor_of_neighbor=True)
+        path2_generator = RepeatedTopK(reward_ratio = 1.0, env_graph=env_graph2, target_graph=target_graph)
 
         path_2 = path2_generator.find_best_path() # Start with the best path
         target_nodes = hamiltonian_target_path.copy()  # All target nodes

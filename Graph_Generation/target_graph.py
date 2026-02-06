@@ -309,119 +309,97 @@ def k_shortest_diverse_paths(input_graph: nx.Graph, output_graph: nx.Graph, targ
 def stochastic_accumulated_blockage_path(graph: nx.Graph, source, target, 
                                 recursions=2, 
                                 num_obstacles_per_path=2, 
-                                obstacle_hop=2,
-                                penalty_factor=1.5): # Multiplicative penalty
+                                obstacle_hop=2):
     """
-    Generates diverse paths by iteratively penalizing regions (n-hop radius) 
-    around nodes on found paths.
-    
-    CRITICAL: Penalties accumulate and are NOT reverted until the very end.
-    """
-    
-    # Track original weights to restore graph state at the end
-    # Key: (u, v), Value: original_weight
-    global_original_weights = {}
+    Generates diverse paths by creating a tree of alternatives,
+    where each obstacle creates a separate branch that inherits
+    the parent's blocked edges.
 
+    Returns: List of (path, depth) tuples where depth indicates recursion level
+    """
+    
+    # 1. Get the initial shortest path
     try:
-        # 1. Always get the True Shortest Path first
-        try:
-            initial_path = nx.shortest_path(graph, source=source, target=target, weight='weight')
-        except nx.NetworkXNoPath:
-            return []
+        initial_path = nx.shortest_path(graph, source=source, target=target, weight='distance')
+    except nx.NetworkXNoPath:
+        return []
 
-        collected_paths = [initial_path]
-        seen_paths = {tuple(initial_path)}
+    collected_paths = [(initial_path, 0)]  # Store (path, depth) tuples
+    seen_paths = {tuple(initial_path)}
+    
+    # Queue of (path, graph_state, depth) to process
+    queue = [(initial_path, graph.copy(), 0)]
+    
+    while queue:
+        parent_path, parent_graph, depth = queue.pop(0)
         
-        current_generation = [initial_path]
+        # Stop if we've reached max recursion depth
+        if depth >= recursions:
+            continue
         
-        # We iterate through generations (recursion depth)
-        for _ in range(recursions):
-            next_generation = []
+        # SAFETY: Ensure path is long enough for obstacle margins
+        start_idx = 1 + obstacle_hop
+        end_idx = len(parent_path) - 1 - obstacle_hop
+        
+        if start_idx >= end_idx:
+            continue 
             
-            # For every path in the current generation, we try to spawn variations
-            for parent_path in current_generation:
+        potential_centers = parent_path[start_idx:end_idx]
+        if not potential_centers:
+            continue
+
+        # --- SELECT OBSTACLE CENTERS ---
+        count = min(len(potential_centers), num_obstacles_per_path)
+        if count == 0:
+            continue
+            
+        chosen_indices = np.random.choice(len(potential_centers), size=count, replace=False)
+        centers = [potential_centers[i] for i in chosen_indices]
+        
+        # --- PROCESS EACH OBSTACLE SEPARATELY (creates separate branches) ---
+        for center_node in centers:
+            # Create a COPY of the parent's graph for this branch
+            graph_copy = parent_graph.copy()
+            
+            # --- IDENTIFY REGION (Hop-based) ---
+            edges_to_remove = set()
+            nearby_nodes_dict = nx.single_source_shortest_path_length(graph_copy, center_node, cutoff=obstacle_hop)
+            
+            for node in nearby_nodes_dict:
+                for neighbor in list(graph_copy.successors(node)):
+                    edges_to_remove.add((node, neighbor))
+                for neighbor in list(graph_copy.predecessors(node)):
+                    edges_to_remove.add((neighbor, node))
+
+            # --- REMOVE EDGES (simulate obstacle) ---
+            for u, v in edges_to_remove:
+                if graph_copy.has_edge(u, v):
+                    graph_copy.remove_edge(u, v)
+            
+            # --- FIND NEW PATH ---
+            try:
+                new_path = nx.shortest_path(graph_copy, source=source, target=target, weight='distance')
+                new_path_tuple = tuple(new_path)
                 
-                # SAFETY: Ensure path is long enough for obstacle margins
-                start_idx = 1 + obstacle_hop
-                end_idx = len(parent_path) - 1 - obstacle_hop
-                
-                if start_idx >= end_idx:
-                    continue 
+                if new_path_tuple not in seen_paths:
+                    seen_paths.add(new_path_tuple)
+                    collected_paths.append((new_path, depth + 1))  # Store with depth
+                    # Add to queue with the MODIFIED graph for next generation
+                    queue.append((new_path, graph_copy, depth + 1))
                     
-                potential_centers = parent_path[start_idx:end_idx]
-                if not potential_centers:
-                    continue
+            except nx.NetworkXNoPath:
+                pass
 
-                # --- SELECT CENTERS ---
-                count = min(len(potential_centers), num_obstacles_per_path)
-                if count > 0:
-                    chosen_indices = np.random.choice(len(potential_centers), size=count, replace=False)
-                    centers = [potential_centers[i] for i in chosen_indices]
-                else:
-                    centers = []
-                
-                for center_node in centers:
-                    # --- IDENTIFY REGION (Hop-based) ---
-                    edges_to_penalize = set()
-                    nearby_nodes_dict = nx.single_source_shortest_path_length(graph, center_node, cutoff=obstacle_hop)
-                    
-                    for node in nearby_nodes_dict:
-                        for neighbor in graph[node]:
-                            u, v = (node, neighbor) if node < neighbor else (neighbor, node)
-                            edges_to_penalize.add((u, v))
-
-                    # --- APPLY ACCUMULATIVE PENALTY ---
-                    # We do NOT revert these inside the loop.
-                    for u, v in edges_to_penalize:
-                        if graph.has_edge(u, v):
-                            data = graph[u][v]
-                            
-                            # 1. Save original weight if we haven't touched this edge yet
-                            if (u, v) not in global_original_weights:
-                                global_original_weights[(u, v)] = data.get('weight', 1.0)
-                            
-                            # 2. Apply Penalty (Marginal Increase)
-                            # We multiply the current weight (which might already be penalized)
-                            data['weight'] = data.get('weight', 1.0) * penalty_factor
-                    
-                    # --- RE-SOLVE ---
-                    # Find a path on this newly "congested" graph
-                    try:
-                        new_path = nx.shortest_path(graph, source=source, target=target, weight='weight')
-                        new_path_tuple = tuple(new_path)
-                        
-                        if new_path_tuple not in seen_paths:
-                            seen_paths.add(new_path_tuple)
-                            collected_paths.append(new_path)
-                            next_generation.append(new_path)
-                            
-                    except nx.NetworkXNoPath:
-                        pass
-                    
-                    # --- NO REVERT HERE! ---
-                    # The penalties persist for the next obstacle/path in the loop.
-
-            current_generation = next_generation
-            if not current_generation:
-                break
-
-        return collected_paths
-
-    finally:
-        # --- RESTORE GRAPH STATE ---
-        # Crucial: We must clean up the graph for the next pair of target nodes.
-        for (u, v), w in global_original_weights.items():
-            if graph.has_edge(u, v):
-                graph[u][v]['weight'] = w
+    return collected_paths
 
 
 def obstacle_sampled_paths(input_graph: nx.Graph, output_graph: nx.Graph, target_nodes,
-                           num_neighbors=4, recursions=2, num_obstacles=2, obstacle_hop=2, penalty_factor=1.5):
+                           num_neighbors=4, recursions=2, num_obstacles=2, obstacle_hop=2):
     """
     Main driver:
     1. Connects target nodes to neighbors.
     2. Calls stochastic_block_diverse_path to get sample paths.
-    3. Assigns 1/n weight to edges used in those paths.
+    3. Assigns hierarchical weights based on recursion depth.
     """
 
     
@@ -451,17 +429,19 @@ def obstacle_sampled_paths(input_graph: nx.Graph, output_graph: nx.Graph, target
             processed_pairs.add(pair)
 
             # --- CALL THE GENERATOR ---
-            diverse_paths = stochastic_accumulated_blockage_path(
+            diverse_paths_with_depth = stochastic_accumulated_blockage_path(
                 input_graph, u, v, 
                 recursions=recursions, 
                 num_obstacles_per_path=num_obstacles, 
-                obstacle_hop=obstacle_hop,
-                penalty_factor=penalty_factor
+                obstacle_hop=obstacle_hop
             )
 
-            if not diverse_paths:
+            if not diverse_paths_with_depth:
                 continue
 
+            # Extract just the paths for storage
+            diverse_paths = [path for path, _ in diverse_paths_with_depth]
+            
             # --- UPDATE OUTPUT GRAPH (Topology) ---
             # We record the optimal length and the paths found
             shortest_path = diverse_paths[0]
@@ -472,17 +452,22 @@ def obstacle_sampled_paths(input_graph: nx.Graph, output_graph: nx.Graph, target
                                   diverse_paths=diverse_paths)
 
             # --- UPDATE INPUT GRAPH (Edge Values) ---
-            # 1/n weighting logic
-            num_paths = len(diverse_paths)
-            weight_per_path = 1.0 / num_paths
-
-            for path in diverse_paths:
+            # Hierarchical weighting based on depth
+            for path, depth in diverse_paths_with_depth:
+                # Weight for this path: 1 / (num_obstacles^depth * recursions)
+                if depth == 0:
+                    # Root path gets 1/recursions
+                    weight_per_path = 1.0 / recursions
+                else:
+                    # Deeper paths get exponentially less weight
+                    weight_per_path = 1.0 / ((num_obstacles ** depth) * recursions)
+                
                 # Iterate edges in path
                 path_edges = zip(path, path[1:])
                 
                 for n1, n2 in path_edges:
                     # Sort to match undirected key
-                    edge = (n2, n1) if n1 > n2 else (n1, n2)
+                    edge = (n2, n1) 
                     
                     if input_graph.has_edge(*edge):
                         # Add value
@@ -500,9 +485,8 @@ def obstacle_sampled_paths(input_graph: nx.Graph, output_graph: nx.Graph, target
 
     return output_graph
 
-
 def create_fully_connected_target_graph(input_graph: nx.Graph, 
-                                        num_neighbors=2, recursions=2, num_obstacles=2, obstacle_hop=2) -> nx.Graph:
+                                        num_neighbors=4, recursions=2, num_obstacles=2, obstacle_hop=2) -> nx.Graph:
     """
     Takes a graph with target nodes and creates a new, fully connected graph
     containing only those target nodes. The edge weights in the new graph

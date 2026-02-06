@@ -54,9 +54,10 @@ def calculate_path_reward(path, env_graph: nx.Graph, reward_ratio: float) -> flo
         if "visible_edges" in env_graph.nodes[current_node]:
             visible_edges = env_graph.nodes[current_node]["visible_edges"]
             visible_unexplored_edges = [edge for edge in visible_edges if env_graph.edges[edge]["observed_edge"] == False]
-        if len(visible_unexplored_edges) > 0:
-            for edge in visible_unexplored_edges:
-                env_graph.edges[edge]["observed_edge"] = True
+            
+            if len(visible_unexplored_edges) > 0:
+                for edge in visible_unexplored_edges:
+                    env_graph.edges[edge]["observed_edge"] = True
 
         # Move to the next node in the path
         current_node = next_node
@@ -225,18 +226,22 @@ class RepeatedTopK:
         candidate_paths = []
 
         # Sampling hyperparameters
-        recursions = 4
-        num_obstacles = 2
-        obstacle_hop = 1
-        penalty_factor = 1.5
+        recursions = 3
+        num_obstacles = 6
+        obstacle_hop = 4
 
-        candidate_paths = stochastic_accumulated_blockage_path(self.env_graph,
-                                                               source = base_path[0],
-                                                               target = base_path[-1],
-                                                               recursions=recursions,
-                                                               num_obstacles_per_path=num_obstacles,
-                                                               obstacle_hop=obstacle_hop,
-                                                               penalty_factor=penalty_factor)
+        # Get paths with depth information
+        candidate_paths_with_depth = stochastic_accumulated_blockage_path(
+            self.env_graph,
+            source=base_path[0],
+            target=base_path[-1],
+            recursions=recursions,
+            num_obstacles_per_path=num_obstacles,
+            obstacle_hop=obstacle_hop
+        )
+        
+        # Extract just the paths (discard depth info for this use case)
+        candidate_paths = [path for path, depth in candidate_paths_with_depth]
         
         return candidate_paths
 
@@ -253,14 +258,14 @@ class RepeatedTopK:
                 raise ValueError("The specified edge does not exist in the target graph.")
 
             diverse_paths_data = self.target_graph.edges[begin_node, end_node]['diverse_paths']
-            shortest_path = diverse_paths_data[0]
+            shortest_path = diverse_paths_data[0].copy()
 
             best_reward = -np.inf
             best_path = None
             
             # Check if the path is in the REVERSE order
             if shortest_path[0] == end_node and shortest_path[-1] == begin_node:
-                shortest_path.reverse()
+                shortest_path = shortest_path[::-1]
             
             # Calculate the reward for the base path
             # Note: Assuming calculate_path_reward is available in scope or imported
@@ -301,15 +306,14 @@ class RepeatedTopK:
                     best_reward = reward
                     best_path = base_path
                 
-                # Now consider deviations at each node
-                for node in base_path[:-1]:
-                    deviated_paths = self.deviate_path_at_node(base_path, node)
+
+                deviated_paths = self.deviate_path_stochastic_block(base_path)
                     
-                    for d_path in deviated_paths:
-                        reward = calculate_path_reward(d_path, self.env_graph.copy(), self.reward_ratio)
-                        if reward > best_reward:
-                            best_reward = reward
-                            best_path = d_path
+                for d_path in deviated_paths:
+                    reward = calculate_path_reward(d_path, self.env_graph.copy(), self.reward_ratio)
+                    if reward > best_reward:
+                        best_reward = reward
+                        best_path = d_path
 
             except nx.NetworkXNoPath:
                 # Handle case where destination is unreachable

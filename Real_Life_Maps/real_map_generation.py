@@ -40,7 +40,6 @@ class RealTerrainGrid:
 
         # Initial distance calculation
         self.calculate_distances()
-        # self.calculate_los_visibility()
 
     def add_obstacle(self, center, rx, ry):
         """
@@ -84,7 +83,7 @@ class RealTerrainGrid:
                 weight = base_dist
                 
             self.G.edges[u, v]['distance'] = float(weight)
-            self.G.edges[u, v]['observed'] = False
+            self.G.edges[u, v]['observed_edge'] = False
 
 
     def compute_all_visibilities(self, max_radius=30, angular_res=180):
@@ -152,7 +151,7 @@ class RealTerrainGrid:
             for u in visible_nodes_set:
                 for v in self.G.neighbors(u):
                     if v in visible_nodes_set:
-                        vis_edges.append(tuple(sorted((u, v))))
+                        vis_edges.append((u, v))
             
             return list(set(vis_edges))
         
