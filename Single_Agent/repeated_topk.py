@@ -71,7 +71,7 @@ def calculate_path_reward(path, env_graph: nx.Graph, reward_ratio: float) -> flo
         
 class RepeatedTopK:
     def __init__(self, reward_ratio: float, env_graph: nx.Graph, target_graph: nx.Graph, 
-                    num_neighbor_samples: int = 1, sample_neighbor_of_neighbor: bool = False):
+                    sample_recursion: int, sample_num_obstacle: int, sample_obstacle_hop: int):
             """
             Initializes the RepeatedTopK method with the specified parameters.
 
@@ -79,16 +79,15 @@ class RepeatedTopK:
                 reward_ratio (float): A weighting factor to balance visibility reward and distance penalty.
                 env_graph (nx.Graph): The environment graph.
                 target_graph (nx.Graph): The target graph.
-                num_neighbor_samples (int): Number of neighbors to sample for deviation.
-                sample_neighbor_of_neighbor (bool): Whether to sample a random neighbor of the chosen neighbor.
             """
             self.reward_ratio = reward_ratio
             self.env_graph = env_graph
             self.target_graph = target_graph
             
-            # New sampling parameters
-            self.num_neighbor_samples = num_neighbor_samples
-            self.sample_neighbor_of_neighbor = sample_neighbor_of_neighbor
+            # sampling parameters
+            self.recursion = sample_recursion
+            self.num_obstacle = sample_num_obstacle
+            self.obstacle_hop = sample_obstacle_hop
 
     def generate_Hamiltonian_path(self):
         """
@@ -225,19 +224,14 @@ class RepeatedTopK:
         
         candidate_paths = []
 
-        # Sampling hyperparameters
-        recursions = 3
-        num_obstacles = 6
-        obstacle_hop = 4
-
         # Get paths with depth information
         candidate_paths_with_depth = stochastic_accumulated_blockage_path(
             self.env_graph,
             source=base_path[0],
             target=base_path[-1],
-            recursions=recursions,
-            num_obstacles_per_path=num_obstacles,
-            obstacle_hop=obstacle_hop
+            recursions=self.recursion,
+            num_obstacles_per_path=self.num_obstacle,
+            obstacle_hop=self.obstacle_hop
         )
         
         # Extract just the paths (discard depth info for this use case)

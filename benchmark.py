@@ -2,6 +2,7 @@ import numpy as np
 import networkx as nx
 from tqdm import tqdm
 import time
+import random
 import itertools
 
 from Graph_Generation.height_graph_generation import HeightMapGrid
@@ -79,27 +80,34 @@ map_generator.remove_edges(edge_list)
 
 env_graph = map_generator.get_graph()
 
+target_recursion = 4
+target_num_obstacles = 4
+target_obstacle_hop = 1
 
-target_graph = create_fully_connected_target_graph(env_graph, recursions=3, num_obstacles=2, obstacle_hop=1)
+target_graph = create_fully_connected_target_graph(env_graph, recursions=target_recursion,
+                                                    num_obstacles=target_num_obstacles, 
+                                                    obstacle_hop=target_obstacle_hop)
 
 
 # Define the chokepoints (the edges that can be blocked)
-chokepoints_list = [((7,11), (8,11)), ((8,11), (9,11)), ((9,11), (10,11)),
-                    ((11,7), (11,8)), ((11,8), (11,9)), ((11,9), (11,10)),
-                    ((8,5), (8,6)), ((8,5), (9,5)), ((9,5), (10,5)), 
-                    ((0,4), (0,5)), ((0,5), (0,6)), ((0,6), (0,7)),
-                    ((5,3), (5,4)), ((5,4), (5,5)), ((5,5), (6,5)),
-                    ((11,2), (11,3)), ((11,3), (11,4)), ((11,4), (11,5))]
 
-# chokepoints_list = [((9,11), (10,11)),
-#                     ((11,9), (11,10)),
-#                     ((8,5), (9,5)), 
-#                     ((0,6), (0,7)),
-#                     ((5,5), (6,5)),
-#                     ((11,4), (11,5))]
+# chokepoints_list = [((7,11), (8,11)), ((8,11), (9,11)), ((9,11), (10,11)),
+#                     ((11,7), (11,8)), ((11,8), (11,9)), ((11,9), (11,10)),
+#                     ((8,5), (8,6)), ((8,5), (9,5)), ((9,5), (10,5)), 
+#                     ((0,4), (0,5)), ((0,5), (0,6)), ((0,6), (0,7)),
+#                     ((5,3), (5,4)), ((5,4), (5,5)), ((5,5), (6,5)),
+#                     ((11,2), (11,3)), ((11,3), (11,4)), ((11,4), (11,5))]
+
+chokepoints_list = [((9,11), (10,11)),
+                    ((11,9), (11,10)),
+                    ((8,5), (9,5)), 
+                    ((0,6), (0,7)),
+                    ((5,5), (6,5)),
+                    ((11,4), (11,5))]
 
 # Pre calculate shortest path and the Hamiltonian target path(trivial for now)
-path_generator = RepeatedTopK(reward_ratio = 1.0, env_graph=env_graph, target_graph=target_graph)
+path_generator = RepeatedTopK(reward_ratio = 1.0, env_graph=env_graph, target_graph=target_graph,
+                              sample_recursion=4, sample_num_obstacle=4, sample_obstacle_hop=1)
 
 shortest_path = []
 hamiltonian_target_path = path_generator.generate_Hamiltonian_path()
@@ -124,6 +132,7 @@ for run_idx in tqdm(range(num_runs)):
 
     # Set the seed here so that each test gets the same samples of the edge block distribution
     np.random.seed(42+run_idx)
+    random.seed(42+run_idx)
     
     start_time = time.time()
 
@@ -226,7 +235,8 @@ for run_idx in tqdm(range(num_runs)):
 
     elif use_our_agent:
         env_graph2 = env_graph.copy() # Agent's world model (doesn't know any edges are blocked)
-        path2_generator = RepeatedTopK(reward_ratio = 1.0, env_graph=env_graph2, target_graph=target_graph)
+        path2_generator = RepeatedTopK(reward_ratio = 2.0, env_graph=env_graph2, target_graph=target_graph,
+                                       sample_recursion=4, sample_num_obstacle=4, sample_obstacle_hop=1)
 
         path_2 = path2_generator.find_best_path() # Start with the best path
         target_nodes = hamiltonian_target_path.copy()  # All target nodes
@@ -410,7 +420,18 @@ if path_length_list:
     std_dev = np.std(path_length_list)
     avg_runtime = np.mean(runtimes)
 
-    print("\n" + "="*30)
+    if use_our_agent:
+        print("\n" + "="*30)
+        print(f"MODEL PARAMETERS")
+        print(f"Edge Recursion:     {target_recursion:d}")
+        print(f"Edge num obstacles: {target_num_obstacles:d}")
+        print(f"Edge obstacle hop:  {target_obstacle_hop:d}")
+        print(f"Plan recursion      {path2_generator.recursion:d}")
+        print(f"Plan num obstacles: {path2_generator.num_obstacle:d}")
+        print(f"Plan obstacle hop:  {path2_generator.obstacle_hop:d}")
+        print(f"Reward ratio:       {path2_generator.reward_ratio:.2f}")
+     
+    print("-" * 30)
     print(f"RESULTS FOR {len(path_length_list)} SUCCESSFUL RUNS")
     print("-" * 30)
     print(f"Mean Path Cost:     {mean_cost:.2f}")

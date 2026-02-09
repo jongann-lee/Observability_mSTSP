@@ -366,10 +366,16 @@ def stochastic_accumulated_blockage_path(graph: nx.Graph, source, target,
             nearby_nodes_dict = nx.single_source_shortest_path_length(graph_copy, center_node, cutoff=obstacle_hop)
             
             for node in nearby_nodes_dict:
-                for neighbor in list(graph_copy.successors(node)):
-                    edges_to_remove.add((node, neighbor))
-                for neighbor in list(graph_copy.predecessors(node)):
-                    edges_to_remove.add((neighbor, node))
+                if graph_copy.is_directed():
+                    # For directed graphs: collect both outgoing and incoming edges
+                    for neighbor in list(graph_copy.successors(node)):
+                        edges_to_remove.add((node, neighbor))
+                    for neighbor in list(graph_copy.predecessors(node)):
+                        edges_to_remove.add((neighbor, node))
+                else:
+                    # For undirected graphs: neighbors gives all adjacent nodes
+                    for neighbor in list(graph_copy[node]):
+                        edges_to_remove.add((node, neighbor))
 
             # --- REMOVE EDGES (simulate obstacle) ---
             for u, v in edges_to_remove:

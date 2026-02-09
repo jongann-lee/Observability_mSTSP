@@ -76,7 +76,8 @@ class RealTerrainGrid:
             base_dist = 1.0 
             
             if diff > 0: # Uphill
-                weight = base_dist + self.k_up * (diff**2)
+                # weight = base_dist + self.k_up * (diff**2)
+                weight = base_dist + self.k_down * (diff + self.h_0) * diff
             elif diff < 0: # Downhill
                 weight = base_dist + self.k_down * (diff + self.h_0) * diff
             else: # Flat
