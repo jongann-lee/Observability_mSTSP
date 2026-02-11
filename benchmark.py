@@ -91,19 +91,19 @@ target_graph = create_fully_connected_target_graph(env_graph, recursions=target_
 
 # Define the chokepoints (the edges that can be blocked)
 
-# chokepoints_list = [((7,11), (8,11)), ((8,11), (9,11)), ((9,11), (10,11)),
-#                     ((11,7), (11,8)), ((11,8), (11,9)), ((11,9), (11,10)),
-#                     ((8,5), (8,6)), ((8,5), (9,5)), ((9,5), (10,5)), 
-#                     ((0,4), (0,5)), ((0,5), (0,6)), ((0,6), (0,7)),
-#                     ((5,3), (5,4)), ((5,4), (5,5)), ((5,5), (6,5)),
-#                     ((11,2), (11,3)), ((11,3), (11,4)), ((11,4), (11,5))]
+chokepoints_list = [((7,11), (8,11)), ((8,11), (9,11)), ((9,11), (10,11)),
+                    ((11,7), (11,8)), ((11,8), (11,9)), ((11,9), (11,10)),
+                    ((8,5), (8,6)), ((8,5), (9,5)), ((9,5), (10,5)), 
+                    ((0,4), (0,5)), ((0,5), (0,6)), ((0,6), (0,7)),
+                    ((5,3), (5,4)), ((5,4), (5,5)), ((5,5), (6,5)),
+                    ((11,2), (11,3)), ((11,3), (11,4)), ((11,4), (11,5))]
 
-chokepoints_list = [((9,11), (10,11)),
-                    ((11,9), (11,10)),
-                    ((8,5), (9,5)), 
-                    ((0,6), (0,7)),
-                    ((5,5), (6,5)),
-                    ((11,4), (11,5))]
+# chokepoints_list = [((9,11), (10,11)),
+#                     ((11,9), (11,10)),
+#                     ((8,5), (9,5)), 
+#                     ((0,6), (0,7)),
+#                     ((5,5), (6,5)),
+#                     ((11,4), (11,5))]
 
 # Pre calculate shortest path and the Hamiltonian target path(trivial for now)
 path_generator = RepeatedTopK(reward_ratio = 1.0, env_graph=env_graph, target_graph=target_graph,
@@ -235,7 +235,7 @@ for run_idx in tqdm(range(num_runs)):
 
     elif use_our_agent:
         env_graph2 = env_graph.copy() # Agent's world model (doesn't know any edges are blocked)
-        path2_generator = RepeatedTopK(reward_ratio = 2.0, env_graph=env_graph2, target_graph=target_graph,
+        path2_generator = RepeatedTopK(reward_ratio = 10.0, env_graph=env_graph2, target_graph=target_graph,
                                        sample_recursion=4, sample_num_obstacle=4, sample_obstacle_hop=1)
 
         path_2 = path2_generator.find_best_path() # Start with the best path
@@ -259,12 +259,10 @@ for run_idx in tqdm(range(num_runs)):
             assumed_observable_edges = set(env_graph2.nodes[current_node]["visible_edges"]) # From the agent's world model 
             blocked_edges = assumed_observable_edges - observable_edges
 
-                # MARK OBSERVED EDGES AS SEEN
-            if "visible_edges" in env_graph2.nodes[current_node]:
-                visible_edges = env_graph2.nodes[current_node]["visible_edges"]
-                for edge in visible_edges:
-                    if env_graph2.has_edge(*edge):
-                        env_graph2.edges[edge]["observed_edge"] = True
+            # MARK OBSERVED EDGES AS SEEN
+            for edge in assumed_observable_edges:
+                if env_graph2.has_edge(*edge):
+                    env_graph2.edges[edge]["observed_edge"] = True
             
             if len(blocked_edges) > 0:
                 # Remove blocked edges from agent's world model
