@@ -258,6 +258,13 @@ for run_idx in tqdm(range(num_runs)):
             observable_edges = set(blocked_env_graph.nodes[current_node]["visible_edges"]) # From the actual blocked env graph
             assumed_observable_edges = set(env_graph2.nodes[current_node]["visible_edges"]) # From the agent's world model 
             blocked_edges = assumed_observable_edges - observable_edges
+
+                # MARK OBSERVED EDGES AS SEEN
+            if "visible_edges" in env_graph2.nodes[current_node]:
+                visible_edges = env_graph2.nodes[current_node]["visible_edges"]
+                for edge in visible_edges:
+                    if env_graph2.has_edge(*edge):
+                        env_graph2.edges[edge]["observed_edge"] = True
             
             if len(blocked_edges) > 0:
                 # Remove blocked edges from agent's world model

@@ -147,12 +147,23 @@ class RealTerrainGrid:
             
             visible_nodes_set = set(visible_nodes)
 
+            # Always add immediate neighbors to visible nodes
+            # This prevents discretization artifacts from missing adjacent grid cells
+            for v in self.G.successors(obs_node):
+                visible_nodes_set.add(v)
+            for v in self.G.predecessors(obs_node):
+                visible_nodes_set.add(v)
+
+
             # 3. Include ALL edges that lie within this polytope
             vis_edges = []
             for u in visible_nodes_set:
                 for v in self.G.neighbors(u):
                     if v in visible_nodes_set:
                         vis_edges.append((u, v))
+                for v in self.G.predecessors(u):
+                    if v in visible_nodes_set:
+                        vis_edges.append((v, u))
             
             return list(set(vis_edges))
         
