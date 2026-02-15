@@ -217,24 +217,26 @@ def block_specific_edges(env_graph: nx.Graph, edges_to_block: list) -> nx.Graph:
                 pass # Edge doesn't exist (maybe wall removed it)
 
     # 4. Safety Check: Verify Connectivity
-    
+
     # CORRECTED: Only accept (u, v) for standard Graphs
     def is_traversable(u, v):
         return not blocked_graph.edges[u, v].get('blocked', False)
-    
+
     traversable_view = nx.subgraph_view(blocked_graph, filter_edge=is_traversable)
 
-    # Global Connectivity
-    if not nx.is_connected(traversable_view):
-        num_components = nx.number_connected_components(traversable_view)
-        print(f"WARNING: The blocked edges disconnected the graph into {num_components} components.")
+    # Global Connectivity — use is_connected for undirected, has_path for directed
+    is_directed = isinstance(blocked_graph, nx.DiGraph)
+    if not is_directed:
+        if not nx.is_connected(traversable_view):
+            num_components = nx.number_connected_components(traversable_view)
+            print(f"WARNING: The blocked edges disconnected the graph into {num_components} components.")
 
     # Source-Target Connectivity (assuming standard keys)
     # If your source/target are stored in node attributes, you can look them up dynamically:
     source = next((n for n, d in blocked_graph.nodes(data=True) if d.get('type') == 'source'), (0,0))
-    target = next((n for n, d in blocked_graph.nodes(data=True) if d.get('type') == 'target'), None)
+    target = next((n for n, d in blocked_graph.nodes(data=True) if d.get('type') == 'target_unreached'), None)
 
-    if source in traversable_view and target in traversable_view:
+    if source in traversable_view and target is not None and target in traversable_view:
         if not nx.has_path(traversable_view, source, target):
             print(f"CRITICAL WARNING: No path exists between {source} and {target} after blocking edges!")
 
