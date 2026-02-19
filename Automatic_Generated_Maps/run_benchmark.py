@@ -29,6 +29,7 @@ if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
 from map_generator import generate_map_suite
+from prune import prune_maps
 
 
 def run_shortest_path_agent(env_graph, blocked_env_graph, hamiltonian_target_path, source, target):
@@ -103,7 +104,7 @@ def run_shortest_path_agent(env_graph, blocked_env_graph, hamiltonian_target_pat
 
 
 def run_our_agent(env_graph, blocked_env_graph, target_graph, hamiltonian_target_path,
-                  source, target, reward_ratio=10.0, sample_recursion=4,
+                  source, target, reward_ratio=3.0, sample_recursion=4,
                   sample_num_obstacle=4, sample_obstacle_hop=1):
     """
     Runs the RepeatedTopK agent. Returns total travel distance.
@@ -357,8 +358,10 @@ def main():
         print(f"Generated {len(candidates)} structurally valid maps")
 
         remaining = args.num_maps - len(maps)
-        print(f"Screening (need {remaining} more maps)...")
-        screened = screen_maps(candidates, screen_runs=args.screen_runs, target_count=remaining)
+        # print(f"Screening (need {remaining} more maps)...")
+        # screened = screen_maps(candidates, screen_runs=args.screen_runs, target_count=remaining)
+        # screened = prune_maps(candidates, threshold=0.0)
+        screened=candidates
         maps.extend(screened)
         print(f"Batch {batch_num}: {len(screened)} passed, total: {len(maps)}/{args.num_maps}")
 

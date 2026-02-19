@@ -12,7 +12,7 @@ from Single_Agent.repeated_topk import RepeatedTopK
 from Single_Agent.RPP import ZeroCostRPP
 
 # Settings
-edge_block_prob = float(9/18)
+edge_block_prob = float(0.5)
 num_runs = 1000
 
 use_shortest_path_agent = False
@@ -106,7 +106,7 @@ chokepoints_list = [((7,11), (8,11)), ((8,11), (9,11)), ((9,11), (10,11)),
 #                     ((11,4), (11,5))]
 
 # Pre calculate shortest path and the Hamiltonian target path(trivial for now)
-path_generator = RepeatedTopK(reward_ratio = 1.0, env_graph=env_graph, target_graph=target_graph,
+path_generator = RepeatedTopK(reward_ratio = 0.0, env_graph=env_graph, target_graph=target_graph,
                               sample_recursion=4, sample_num_obstacle=4, sample_obstacle_hop=1)
 
 shortest_path = []
@@ -235,7 +235,7 @@ for run_idx in tqdm(range(num_runs)):
 
     elif use_our_agent:
         env_graph2 = env_graph.copy() # Agent's world model (doesn't know any edges are blocked)
-        path2_generator = RepeatedTopK(reward_ratio = 10.0, env_graph=env_graph2, target_graph=target_graph,
+        path2_generator = RepeatedTopK(reward_ratio = 1.5, env_graph=env_graph2, target_graph=target_graph,
                                        sample_recursion=4, sample_num_obstacle=4, sample_obstacle_hop=1)
 
         path_2 = path2_generator.find_best_path() # Start with the best path
