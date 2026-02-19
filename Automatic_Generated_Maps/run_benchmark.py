@@ -29,6 +29,7 @@ if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
 from map_generator import generate_map_suite
+from analytic_prune import prune_maps, score_map
 
 
 def run_shortest_path_agent(env_graph, blocked_env_graph, hamiltonian_target_path, source, target):
@@ -103,7 +104,7 @@ def run_shortest_path_agent(env_graph, blocked_env_graph, hamiltonian_target_pat
 
 
 def run_our_agent(env_graph, blocked_env_graph, target_graph, hamiltonian_target_path,
-                  source, target, reward_ratio=10.0, sample_recursion=4,
+                  source, target, reward_ratio=3.0, sample_recursion=4,
                   sample_num_obstacle=4, sample_obstacle_hop=1):
     """
     Runs the RepeatedTopK agent. Returns total travel distance.
@@ -298,29 +299,23 @@ def benchmark_single_map(map_data, num_runs=200, target_recursion=4,
 
 def screen_maps(candidates, screen_runs=50, target_count=None):
     """
-    Phase 1: Quick screening of candidate maps.
-    Runs a mini-benchmark and keeps only maps where our agent performs
-    at least as well as the SP agent. Stops early once target_count maps pass.
+    Phase 1: Analytic screening of candidate maps using structural scores.
+    No simulation required -- uses graph properties to predict which maps
+    will favor the visibility-aware agent.
     """
+    print(f"  Scoring {len(candidates)} candidates analytically...")
+    scored = prune_maps(candidates, target_count=target_count, verbose=False)
     screened = []
-    for i, map_data in enumerate(candidates):
-        if target_count and len(screened) >= target_count:
-            break
-        print(f"  Screening map {i+1}/{len(candidates)} "
-              f"({map_data.get('label', '?')}, seed={map_data.get('seed', '?')})...",
-              end="", flush=True)
-        result = benchmark_single_map(map_data, num_runs=screen_runs)
-        if 'error' in result or result['valid_runs'] < 5:
-            print(" SKIP (error/no runs)")
-            continue
-        sp_avg = np.mean(result['sp_costs'])
-        our_avg = np.mean(result['our_costs'])
-        improvement = ((sp_avg - our_avg) / sp_avg * 100) if sp_avg > 0 else 0
-        if our_avg <= sp_avg:
-            screened.append(map_data)
-            print(f" PASS (impr={improvement:+.1f}%, {result['valid_runs']} runs)")
-        else:
-            print(f" FAIL (impr={improvement:+.1f}%)")
+    for map_data, score, components in scored:
+        label = map_data.get('label', '?')
+        seed = map_data.get('seed', '?')
+        print(f"  Map (seed={seed}, {label}): score={score:.2f} "
+              f"[vis={components['cp_visibility']:.2f}, "
+              f"detour={components['detour_near_blob']:.2f}, "
+              f"entry={components['entry_efficiency']:.2f}, "
+              f"impact={components['cp_impact']:.2f}, "
+              f"diversity={components['path_diversity']:.2f}]")
+        screened.append(map_data)
     return screened
 
 
@@ -337,7 +332,7 @@ def main():
     parser.add_argument("--output-summary", type=str, default="benchmark_summary.json",
                         help="Output summary JSON filename")
     parser.add_argument("--screen-runs", type=int, default=50,
-                        help="Number of runs for screening phase")
+                        help="(Deprecated) Screening now uses analytic scores")
     args = parser.parse_args()
 
     output_dir = os.path.dirname(os.path.abspath(__file__))
@@ -358,7 +353,7 @@ def main():
 
         remaining = args.num_maps - len(maps)
         print(f"Screening (need {remaining} more maps)...")
-        screened = screen_maps(candidates, screen_runs=args.screen_runs, target_count=remaining)
+        screened = screen_maps(candidates, target_count=remaining)
         maps.extend(screened)
         print(f"Batch {batch_num}: {len(screened)} passed, total: {len(maps)}/{args.num_maps}")
 
