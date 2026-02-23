@@ -330,8 +330,10 @@ def stochastic_accumulated_blockage_path(graph: nx.Graph, source, target,
     # Queue of (path, graph_state, depth) to process
     queue = [(initial_path, graph.copy(), 0)]
     
+    # how_many = 0
     while queue:
         parent_path, parent_graph, depth = queue.pop(0)
+        # how_many +=1
         
         # Stop if we've reached max recursion depth
         if depth >= recursions:
@@ -395,7 +397,8 @@ def stochastic_accumulated_blockage_path(graph: nx.Graph, source, target,
                     
             except nx.NetworkXNoPath:
                 pass
-
+    
+    # print(f"Generated {len(collected_paths)} paths with {how_many} total attempts.")
     return collected_paths
 
 

@@ -37,8 +37,8 @@ REWARD_RATIO = 1.0
 TARGET_RECURSION = 4
 TARGET_NUM_OBSTACLES = 8
 TARGET_OBSTACLE_HOP = 4
-SAMPLE_RECURSION = 1
-SAMPLE_NUM_OBSTACLES = 1
+SAMPLE_RECURSION = 2
+SAMPLE_NUM_OBSTACLES = 2
 SAMPLE_OBSTACLE_HOP = 4
 
 # --- Map Save/Load ---
@@ -168,6 +168,9 @@ def run_benchmark():
 
     path_length_list = []
     runtimes = []
+    num_samples_list = []
+    t_sample_list = []
+    t_reward_list = []
 
     agent_label = "Our Agent (RepeatedTopK)" if USE_OUR_AGENT else "Shortest Path Agent"
     print(f"\nRunning benchmark with: {agent_label}")
@@ -262,7 +265,7 @@ def run_benchmark():
                 sample_obstacle_hop=SAMPLE_OBSTACLE_HOP
             )
 
-            path_2 = path2_generator.find_best_path()
+            path_2, num_samples, t_sample, t_reward = path2_generator.find_best_path()
             target_nodes = [(N-1, N-1), (0,0)]
 
             current_node = path_2[0]
@@ -331,6 +334,9 @@ def run_benchmark():
                 index += 1
 
             path_length_list.append(total_travel_distance)
+            num_samples_list.append(num_samples)
+            t_sample_list.append(t_sample)
+            t_reward_list.append(t_reward)
 
         end_time = time.time()
         runtimes.append(end_time - start_time)
@@ -376,6 +382,15 @@ def run_benchmark():
         print(f"  Avg runtime/run:    {avg_runtime:.4f}s")
     else:
         print("\nNo successful runs to report.")
+    
+    print(f"\nADDITIONAL METRICS FOR OUR AGENT:")
+    if num_samples_list:
+        mean_samples = np.mean(num_samples_list)
+        mean_t_sample = np.mean(t_sample_list)
+        mean_t_reward = np.mean(t_reward_list)
+        print(f"  Mean samples:       {mean_samples:.2f}")
+        print(f"  Mean sample time:   {mean_t_sample:.4f}s")
+        print(f"  Mean reward time:   {mean_t_reward:.4f}s")
 
     print("=" * 40)
 

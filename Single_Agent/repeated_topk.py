@@ -7,7 +7,7 @@ project_root = os.path.abspath(os.path.join(os.getcwd(), ".."))
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-
+import time
 import numpy as np
 import networkx as nx
 
@@ -270,15 +270,20 @@ class RepeatedTopK:
 
             # Now get the list of alternate paths
                 
+            t_sample = time.perf_counter()
             deviated_paths = self.deviate_path_stochastic_block(shortest_path)
+            t_sample = time.perf_counter() - t_sample
+            num_samples = len(deviated_paths)
             
+            t_reward = time.perf_counter()
             for d_path in deviated_paths:
                 reward = calculate_path_reward(d_path, self.env_graph.copy(), self.reward_ratio)
                 if reward > best_reward:
                     best_reward = reward
                     best_path = d_path
+            t_reward = time.perf_counter() - t_reward
 
-            return best_path
+            return best_path, num_samples, t_sample, t_reward
     
 
     
@@ -300,20 +305,22 @@ class RepeatedTopK:
                     best_reward = reward
                     best_path = base_path
                 
-
                 deviated_paths = self.deviate_path_stochastic_block(base_path)
+
                     
+
                 for d_path in deviated_paths:
                     reward = calculate_path_reward(d_path, self.env_graph.copy(), self.reward_ratio)
                     if reward > best_reward:
                         best_reward = reward
                         best_path = d_path
 
+
             except nx.NetworkXNoPath:
                 # Handle case where destination is unreachable
                 return None
 
-            return best_path 
+            return best_path
 
     def find_best_path(self):
         """
@@ -331,7 +338,7 @@ class RepeatedTopK:
 
             # print(f"Processing section from {begin_node} to {end_node}")
 
-            section_best_path = self.process_section(begin_node, end_node)
+            section_best_path, num_samples, t_sample, t_reward = self.process_section(begin_node, end_node)
 
             # Append the section best path, avoiding duplication of nodes at the end
             if len(best_path) > 0 and best_path[-1] == section_best_path[0]:
@@ -355,7 +362,7 @@ class RepeatedTopK:
         # print(f"Original Hamiltonian Path Reward: {original_path_reward}")
         # print(f"Best Path Reward: {best_path_reward}")
 
-        return best_path
+        return best_path, num_samples, t_sample, t_reward
             
 
 
