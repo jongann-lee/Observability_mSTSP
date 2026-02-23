@@ -1,20 +1,19 @@
 """
-Automatic map generator for benchmarking RepeatedTopK vs Shortest Path agents.
+Simplified map generator for benchmarking RepeatedTopK vs Shortest Path agents.
 
-Design: "Grow blobs from centers."
-1. Sample evenly-spread blob centers on the grid
-2. Grow blobs outward from centers (distance-ordered → roughly convex shapes)
-3. Only remove blob-boundary edges (corridor network stays fully 4-connected)
-4. Re-add 2-3 entry edges per blob
-5. Place chokepoints on corridor edges adjacent to blobs, ≥30% into path
-
-This matches the handcrafted benchmark philosophy: large organic blobs with
-narrow gaps between them, and a fully-connected corridor network.
+Algorithm:
+1. Sample evenly-spread blob centers on the grid.
+2. Grow blobs outward via BFS (distance-ordered → roughly convex shapes),
+   maintaining a 1-node gap between blobs.
+3. Remove all blob↔corridor boundary edges, then re-add 2-3 per blob.
+3b. Fix diagonal disconnects: where two corridor nodes are diagonally
+    adjacent with blob nodes blocking both grid paths, convert one
+    blob node to corridor.
+4. Place chokepoints on corridor edges that are adjacent to a blob and
+   at least 35 % of the way along the shortest path.
 """
 
-import sys
-import os
-import heapq
+import sys, os, heapq
 import numpy as np
 import networkx as nx
 
@@ -24,728 +23,459 @@ if project_root not in sys.path:
 
 from Graph_Generation.height_graph_generation import HeightMapGrid
 
+# ── helpers ────────────────────────────────────────────────────────────────
 
-# ---------------------------------------------------------------------------
-#  Step 1: Sample blob centers
-# ---------------------------------------------------------------------------
+_DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
-def _sample_centers(grid_size, num_blobs, source, target, rng,
-                    min_sep_fraction=0.30, margin=2):
-    """
-    Sample blob centers that are evenly spread across the grid.
 
-    - Centers are at least `min_sep_fraction * grid_size` apart (Manhattan)
-    - Centers are at least `margin` away from source and target
-    - Uses rejection sampling with up to 500 attempts per center
-    """
-    min_sep = max(3, int(min_sep_fraction * grid_size))
+def _in_bounds(r, c, gs):
+    return 0 <= r < gs and 0 <= c < gs
+
+
+def _neighbors4(r, c, gs):
+    for dr, dc in _DIRS:
+        nr, nc = r + dr, c + dc
+        if _in_bounds(nr, nc, gs):
+            yield (nr, nc)
+
+
+# ── 1. sample blob centres ────────────────────────────────────────────────
+
+def _sample_centers(gs, num_blobs, source, target, rng, min_sep_frac=0.30, margin=2):
+    """Rejection-sample centres that are spread apart and away from S/T."""
+    min_sep = max(3, int(min_sep_frac * gs))
+
     forbidden = set()
-    for dr in range(-margin, margin + 1):
-        for dc in range(-margin, margin + 1):
-            for base in [source, target]:
+    for base in (source, target):
+        for dr in range(-margin, margin + 1):
+            for dc in range(-margin, margin + 1):
                 r, c = base[0] + dr, base[1] + dc
-                if 0 <= r < grid_size and 0 <= c < grid_size:
+                if _in_bounds(r, c, gs):
                     forbidden.add((r, c))
 
     centers = []
     for _ in range(num_blobs):
-        placed = False
-        for _attempt in range(500):
-            r = rng.randint(2, grid_size - 2)
-            c = rng.randint(2, grid_size - 2)
-            candidate = (r, c)
-
-            if candidate in forbidden:
+        for _try in range(500):
+            cand = (rng.randint(2, gs - 2), rng.randint(2, gs - 2))
+            if cand in forbidden:
                 continue
-
-            # Check min separation from existing centers
-            too_close = False
-            for existing in centers:
-                if abs(candidate[0] - existing[0]) + abs(candidate[1] - existing[1]) < min_sep:
-                    too_close = True
-                    break
-            if too_close:
+            if any(abs(cand[0] - c[0]) + abs(cand[1] - c[1]) < min_sep for c in centers):
                 continue
-
-            centers.append(candidate)
-            placed = True
+            centers.append(cand)
             break
-
-        if not placed:
-            raise ValueError(
-                f"Could not place center {len(centers)+1}/{num_blobs} "
-                f"(grid={grid_size}, min_sep={min_sep})")
-
+        else:
+            raise ValueError(f"Could not place blob centre {len(centers)+1}/{num_blobs}")
     return centers
 
 
-# ---------------------------------------------------------------------------
-#  Step 2: Grow blobs from centers
-# ---------------------------------------------------------------------------
+# ── 2. grow blobs ─────────────────────────────────────────────────────────
 
-def _grow_blobs(grid_size, centers, target_coverage, source, target, rng):
+def _grow_blobs(gs, centers, coverage, source, target, rng):
     """
-    Grow blobs outward from centers using distance-ordered BFS.
-
-    Prioritizing nodes closest to center produces roughly convex shapes.
-    A gap of ≥1 node is maintained between blobs.
-
-    Returns list of blobs (each blob is a list of (row, col) tuples).
+    BFS-grow blobs from centres (distance-ordered → roughly convex).
+    Keeps a 1-node gap between distinct blobs.  Grid border row/col is
+    forbidden so perimeter corridors stay open.
     """
-    total_nodes = grid_size * grid_size
-    total_target = int(target_coverage * total_nodes)
-    num_blobs = len(centers)
+    total_target = int(coverage * gs * gs)
+    base = total_target // len(centers)
 
-    # Randomize per-blob target sizes (±25% of equal share)
-    base_size = total_target // num_blobs
-    target_sizes = []
-    for _ in range(num_blobs):
-        variation = rng.uniform(0.75, 1.25)
-        target_sizes.append(max(5, int(base_size * variation)))
+    # per-blob target sizes (±25 %)
+    sizes = [max(5, int(base * rng.uniform(0.75, 1.25))) for _ in centers]
 
-    # Track which nodes are claimed or forbidden
-    claimed = {}  # node → blob_index
-    forbidden = {source, target}  # can never be blob nodes
+    claimed = {}          # node → blob index
+    forbidden = {source, target}
 
-    # Reserve a 1-node-wide corridor along grid edges so perimeter L-shaped
-    # paths (like the handcrafted map) are never blocked by blobs.
-    for i in range(grid_size):
-        forbidden.add((0, i))            # top row
-        forbidden.add((grid_size - 1, i))  # bottom row
-        forbidden.add((i, 0))            # left col
-        forbidden.add((i, grid_size - 1))  # right col
+    # reserve grid border
+    for i in range(gs):
+        for node in [(0, i), (gs - 1, i), (i, 0), (i, gs - 1)]:
+            forbidden.add(node)
 
-    # For each blob, maintain a priority queue: (distance_to_center, random_tiebreak, node)
-    blob_nodes = [[] for _ in range(num_blobs)]
+    blobs = [[] for _ in centers]
     queues = []
-    for bi, center in enumerate(centers):
-        blob_nodes[bi].append(center)
-        claimed[center] = bi
+
+    for bi, ctr in enumerate(centers):
+        claimed[ctr] = bi
+        blobs[bi].append(ctr)
         pq = []
-        r, c = center
-        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            nr, nc = r + dr, c + dc
-            if 0 <= nr < grid_size and 0 <= nc < grid_size:
-                dist = abs(nr - center[0]) + abs(nc - center[1])
-                heapq.heappush(pq, (dist, rng.rand(), (nr, nc)))
+        for nb in _neighbors4(*ctr, gs):
+            heapq.heappush(pq, (1, rng.random(), nb))
         queues.append(pq)
 
-    # Grow blobs in round-robin, one node at a time
-    active = list(range(num_blobs))
-    rounds_without_progress = 0
-
-    while active and rounds_without_progress < num_blobs * 3:
+    # round-robin: one node per blob per round
+    active = set(range(len(centers)))
+    stale = 0
+    while active and stale < len(centers) * 3:
         progress = False
-        next_active = []
-
-        for bi in active:
-            if len(blob_nodes[bi]) >= target_sizes[bi]:
+        for bi in list(active):
+            if len(blobs[bi]) >= sizes[bi]:
+                active.discard(bi)
                 continue
-
-            center = centers[bi]
-            added = False
-
+            ctr = centers[bi]
             while queues[bi]:
-                dist, _, node = heapq.heappop(queues[bi])
-                r, c = node
-
+                _, _, node = heapq.heappop(queues[bi])
                 if node in claimed or node in forbidden:
                     continue
-
-                # Gap constraint: node must not be 4-adjacent to a different blob
-                adjacent_to_other = False
-                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                    nr, nc = r + dr, c + dc
-                    nb = (nr, nc)
-                    if nb in claimed and claimed[nb] != bi:
-                        adjacent_to_other = True
-                        break
-                if adjacent_to_other:
+                # gap constraint: no 4-neighbour belongs to a *different* blob
+                if any(claimed.get(nb, bi) != bi for nb in _neighbors4(*node, gs)
+                       if nb in claimed):
                     continue
-
-                # Claim this node
                 claimed[node] = bi
-                blob_nodes[bi].append(node)
-                added = True
+                blobs[bi].append(node)
+                for nb in _neighbors4(*node, gs):
+                    if nb not in claimed and nb not in forbidden:
+                        d = abs(nb[0] - ctr[0]) + abs(nb[1] - ctr[1])
+                        heapq.heappush(queues[bi], (d, rng.random(), nb))
                 progress = True
+                break
+            else:
+                active.discard(bi)
+        stale = 0 if progress else stale + 1
 
-                # Add neighbors to queue
-                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                    nr, nc = r + dr, c + dc
-                    if 0 <= nr < grid_size and 0 <= nc < grid_size:
-                        nb = (nr, nc)
-                        if nb not in claimed and nb not in forbidden:
-                            d = abs(nr - center[0]) + abs(nc - center[1])
-                            heapq.heappush(queues[bi], (d, rng.rand(), nb))
-                break  # One node per blob per round
-
-            if len(blob_nodes[bi]) < target_sizes[bi]:
-                next_active.append(bi)
-
-        active = next_active
-        if not progress:
-            rounds_without_progress += 1
-        else:
-            rounds_without_progress = 0
-
-    # Filter out trivially small blobs
-    blobs = [b for b in blob_nodes if len(b) >= 3]
-    return blobs
+    return [b for b in blobs if len(b) >= 3]
 
 
-# ---------------------------------------------------------------------------
-#  Step 3: Entry point selection
-# ---------------------------------------------------------------------------
+# ── 3. pick spatially-spread entry edges ──────────────────────────────────
 
-def _pick_spread_entries(boundary_edges, all_blob_set, num_entries):
-    """
-    Greedy farthest-point strategy for spatially spread entry points.
-    """
-    edge_corridor_nodes = []
-    for edge in boundary_edges:
-        u, v = edge
-        corridor_node = v if u in all_blob_set else u
-        edge_corridor_nodes.append((edge, corridor_node))
+def _pick_entries(boundary_edges, blob_set, num):
+    """Greedy farthest-point selection among boundary edges."""
+    # for each edge, identify the corridor-side endpoint
+    items = []
+    for u, v in boundary_edges:
+        corridor = v if u in blob_set else u
+        items.append(((u, v), corridor))
 
-    if len(edge_corridor_nodes) <= num_entries:
-        return [e for e, _ in edge_corridor_nodes]
+    if len(items) <= num:
+        return [e for e, _ in items]
 
-    chosen = [edge_corridor_nodes[0]]
-    remaining = list(edge_corridor_nodes[1:])
-
-    while len(chosen) < num_entries and remaining:
-        best_idx = -1
-        best_min_dist = -1
-        for i, (edge, cnode) in enumerate(remaining):
-            min_dist = min(
-                abs(cnode[0] - ch[0]) + abs(cnode[1] - ch[1])
-                for _, ch in chosen
-            )
-            if min_dist > best_min_dist:
-                best_min_dist = min_dist
-                best_idx = i
-        if best_idx >= 0:
-            chosen.append(remaining.pop(best_idx))
-        else:
-            break
-
+    chosen = [items[0]]
+    rest = items[1:]
+    while len(chosen) < num and rest:
+        best_i, best_d = 0, -1
+        for i, (_, c) in enumerate(rest):
+            d = min(abs(c[0] - ch[0]) + abs(c[1] - ch[1]) for _, ch in chosen)
+            if d > best_d:
+                best_d, best_i = d, i
+        chosen.append(rest.pop(best_i))
     return [e for e, _ in chosen]
 
 
-# ---------------------------------------------------------------------------
-#  Step 4: Chokepoint placement
-# ---------------------------------------------------------------------------
+# ── 3b. fix diagonal disconnects ─────────────────────────────────────────
 
-def _find_chokepoints(graph, source, target, all_blob_nodes, corridor_edges,
-                      num_chokepoints=18, rng=None, min_path_fraction=0.30):
+def _fix_diagonal_disconnects(graph, blob_set, blobs, gs):
     """
-    Places chokepoints on corridor edges that are:
-    1. Part of the corridor network
-    2. Spatially adjacent to a blob
-    3. >= min_path_fraction along the shortest path
-    4. Grouped into chains of 2-3
+    Find pairs of corridor nodes that are diagonally adjacent where both
+    shared grid neighbours are blob nodes.  Convert one blob node to
+    corridor so they can connect through the grid.
+
+    E.g. corridor at (r,c) and (r+1,c+1) share neighbours (r,c+1) and
+    (r+1,c).  If both are blob nodes, pick one, convert it to corridor,
+    remove its blob edges, and add corridor edges.
     """
-    if rng is None:
-        rng = np.random.RandomState()
+    corridor_nodes = {n for n in graph.nodes() if n not in blob_set}
 
-    grid_size = max(max(n) for n in graph.nodes()) + 1
+    node_to_blob = {}
+    for bi, b in enumerate(blobs):
+        for n in b:
+            node_to_blob[n] = bi
 
-    try:
-        sp = nx.shortest_path(graph, source, target, weight='distance')
-        sp_cost = sum(graph.edges[sp[i], sp[i + 1]]['distance']
-                      for i in range(len(sp) - 1))
-    except nx.NetworkXNoPath:
-        return []
+    _DIAGS = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    converted = set()
 
-    dist_from_source = nx.single_source_dijkstra_path_length(
-        graph, source, weight='distance')
-
-    # Diverse paths for edge frequency
-    diverse_paths = []
-    temp_g = graph.copy()
-    for _ in range(20):
-        try:
-            p = nx.shortest_path(temp_g, source, target, weight='distance')
-            diverse_paths.append(p)
-            for i in range(len(p) - 1):
-                u, v = p[i], p[i + 1]
-                if temp_g.has_edge(u, v):
-                    temp_g.edges[u, v]['distance'] *= 3.0
-        except nx.NetworkXNoPath:
-            break
-
-    edge_freq = {}
-    for path in diverse_paths:
-        for i in range(len(path) - 1):
-            ek = tuple(sorted((path[i], path[i + 1])))
-            edge_freq[ek] = edge_freq.get(ek, 0) + 1
-
-    # Spatial blob adjacency
-    blob_adjacent = set()
-    for r, c in all_blob_nodes:
-        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+    for (r, c) in list(corridor_nodes):
+        for dr, dc in _DIAGS:
             nr, nc = r + dr, c + dc
-            if 0 <= nr < grid_size and 0 <= nc < grid_size:
-                if (nr, nc) not in all_blob_nodes:
-                    blob_adjacent.add((nr, nc))
-
-    min_dist = sp_cost * min_path_fraction
-
-    # Near source/target exclusion
-    near_st = set()
-    for dr in range(-2, 3):
-        for dc in range(-2, 3):
-            for base in [source, target]:
-                nr, nc = base[0] + dr, base[1] + dc
-                if 0 <= nr < grid_size and 0 <= nc < grid_size:
-                    near_st.add((nr, nc))
-
-    # Score candidate edges: must be corridor, blob-adjacent, on a path.
-    # Key: compute "detour cost" = how much removing an edge increases SP cost.
-    scored = []
-    for ek in corridor_edges:
-        u, v = ek
-        if not graph.has_edge(u, v) and not graph.has_edge(v, u):
-            continue
-        if u in all_blob_nodes or v in all_blob_nodes:
-            continue
-
-        freq = edge_freq.get(ek, 0)
-        if freq == 0:
-            continue
-
-        # Must be spatially adjacent to blob
-        if u not in blob_adjacent and v not in blob_adjacent:
-            continue
-
-        edge_dist = min(dist_from_source.get(u, 0), dist_from_source.get(v, 0))
-        if edge_dist < min_dist:
-            continue
-        if u in near_st and v in near_st:
-            continue
-
-        # Compute detour cost: remove this edge, recompute SP
-        detour_bonus = 1.0
-        test_g = graph.copy()
-        if test_g.has_edge(u, v):
-            test_g.remove_edge(u, v)
-        elif test_g.has_edge(v, u):
-            test_g.remove_edge(v, u)
-        try:
-            alt_sp = nx.shortest_path(test_g, source, target, weight='distance')
-            alt_cost = sum(test_g.edges[alt_sp[i], alt_sp[i+1]]['distance']
-                           for i in range(len(alt_sp) - 1))
-            cost_increase = alt_cost - sp_cost
-            if cost_increase > 0.5:
-                detour_bonus = 1.0 + cost_increase
-        except nx.NetworkXNoPath:
-            detour_bonus = 5.0  # Bridge edge
-
-        score = float(freq) * detour_bonus
-        if u in blob_adjacent and v in blob_adjacent:
-            score *= 2.0
-        if graph.degree(u) == 2 and graph.degree(v) == 2:
-            score *= 2.0
-        elif graph.degree(u) == 2 or graph.degree(v) == 2:
-            score *= 1.5
-
-        path_frac = edge_dist / sp_cost if sp_cost > 0 else 0
-        if 0.4 <= path_frac <= 0.85:
-            score *= 1.5
-
-        scored.append((ek, score))
-
-    scored.sort(key=lambda x: -x[1])
-
-    # Identify which diverse path each edge belongs to (for route diversity)
-    edge_to_paths = {}
-    for pi, path in enumerate(diverse_paths):
-        for i in range(len(path) - 1):
-            ek = tuple(sorted((path[i], path[i + 1])))
-            edge_to_paths.setdefault(ek, set()).add(pi)
-
-    # Build chains of 2-3, ensuring CPs are distributed across routes
-    chosen = []
-    used = set()
-    paths_covered = set()
-
-    # First pass: pick from uncovered routes to ensure diversity
-    for ek, sc in scored:
-        if len(chosen) >= num_chokepoints:
-            break
-        if ek in used:
-            continue
-
-        # Prefer edges on routes not yet covered
-        edge_paths = edge_to_paths.get(ek, set())
-        uncovered = edge_paths - paths_covered
-        # Skip if all this edge's routes are already covered AND we have
-        # fewer than half the CPs (force diversity in first half)
-        if not uncovered and len(chosen) < num_chokepoints // 2:
-            continue
-
-        u, v = ek
-        chain = _extend_chain(graph, u, v, all_blob_nodes, blob_adjacent,
-                              corridor_edges, used, target_length=3)
-        if not chain:
-            continue
-
-        test_g = graph.copy()
-        test_g.remove_edges_from(chain)
-        if not nx.has_path(test_g, source, target):
-            continue
-
-        for e in chain:
-            chosen.append(e)
-            used.add(tuple(sorted(e)))
-            for pi in edge_to_paths.get(tuple(sorted(e)), set()):
-                paths_covered.add(pi)
-
-    # Second pass: fill remaining slots without diversity constraint
-    if len(chosen) < num_chokepoints:
-        for ek, sc in scored:
-            if len(chosen) >= num_chokepoints:
-                break
-            if ek in used:
+            if not _in_bounds(nr, nc, gs):
+                continue
+            diag = (nr, nc)
+            if diag not in corridor_nodes:
                 continue
 
-            u, v = ek
-            chain = _extend_chain(graph, u, v, all_blob_nodes, blob_adjacent,
-                                  corridor_edges, used, target_length=3)
-            if not chain:
-                continue
+            # two shared grid neighbours
+            mid1 = (r, nc)
+            mid2 = (nr, c)
 
-            test_g = graph.copy()
-            test_g.remove_edges_from(chain)
-            if not nx.has_path(test_g, source, target):
-                continue
+            if mid1 not in blob_set or mid2 not in blob_set:
+                continue  # at least one path exists, no fix needed
 
-            for e in chain:
-                chosen.append(e)
-                used.add(tuple(sorted(e)))
+            # both blocked by blob — convert one
+            # prefer one already converted (free), else pick from larger blob
+            pick = None
+            if mid1 in converted:
+                continue  # already fixed
+            if mid2 in converted:
+                continue  # already fixed
 
-    return chosen
+            b1 = node_to_blob.get(mid1)
+            b2 = node_to_blob.get(mid2)
+            if b1 is not None and b2 is not None:
+                pick = mid1 if len(blobs[b1]) >= len(blobs[b2]) else mid2
+            else:
+                pick = mid1
+
+            # convert pick: blob → corridor
+            converted.add(pick)
+            blob_set.discard(pick)
+            bi = node_to_blob.pop(pick, None)
+            if bi is not None:
+                try:
+                    blobs[bi].remove(pick)
+                except ValueError:
+                    pass
+            graph.nodes[pick]["height"] = 0.0
+
+            # remove blob-internal edges
+            for nb in list(graph.neighbors(pick)):
+                if nb in blob_set:
+                    graph.remove_edge(pick, nb)
+
+            # add corridor edges to grid neighbours that are corridor
+            for nb in _neighbors4(*pick, gs):
+                if nb in graph and nb not in blob_set and not graph.has_edge(pick, nb):
+                    h_u = graph.nodes[pick]["height"]
+                    h_v = graph.nodes[nb]["height"]
+                    graph.add_edge(pick, nb,
+                                   distance=1.0 + 2.0 * abs(h_u - h_v),
+                                   observed_edge=False)
+
+            corridor_nodes.add(pick)
 
 
-def _extend_chain(graph, u, v, all_blob_nodes, blob_adjacent,
-                  corridor_edges, used_edges, target_length=3):
-    """Extend edge into a chain of 2-3 corridor edges adjacent to blobs.
+# ── 4. chokepoint placement ───────────────────────────────────────────────
 
-    IMPORTANT: Every edge in the chain must have at least one endpoint
-    that is spatially adjacent to a blob, so validation passes.
+def _find_corridors(graph, blob_set):
     """
-    chain = [(u, v)]
-    used_in_chain = {tuple(sorted((u, v)))}
+    Find corridor chains: maximal connected sequences of corridor nodes
+    where EVERY node has exactly 2 corridor neighbours (strict narrow passage).
 
-    def _is_edge_blob_adjacent(n1, n2):
-        """Check that at least one endpoint of the edge is blob-adjacent."""
-        return n1 in blob_adjacent or n2 in blob_adjacent
+    Returns a list of corridors, each being an ordered list of nodes.
+    """
+    corridor_nodes = {n for n in graph.nodes() if n not in blob_set}
 
-    # Forward from v
-    current, prev = v, u
-    while len(chain) < target_length:
-        best_next = None
-        best_score = -1
-        for n in graph.neighbors(current):
-            if n == prev or n in all_blob_nodes:
-                continue
-            ek = tuple(sorted((current, n)))
-            if ek in used_edges or ek in used_in_chain:
-                continue
-            if ek not in corridor_edges:
-                continue
-            # Must be blob-adjacent to pass validation
-            if not _is_edge_blob_adjacent(current, n):
-                continue
-            s = 2.0 if n in blob_adjacent else 1.0
-            if s > best_score:
-                best_score = s
-                best_next = n
-        if best_next is None:
-            break
-        chain.append((current, best_next))
-        used_in_chain.add(tuple(sorted((current, best_next))))
-        prev, current = current, best_next
+    # corridor-corridor degree
+    cor_deg = {}
+    for n in corridor_nodes:
+        cor_deg[n] = sum(1 for nb in graph.neighbors(n) if nb in corridor_nodes)
 
-    if len(chain) >= 2:
-        return chain
+    # strictly degree-2 corridor nodes only
+    chain_nodes = {n for n, d in cor_deg.items() if d == 2}
 
-    # Backward from u
-    current, prev = u, v
-    while len(chain) < target_length:
-        best_next = None
-        best_score = -1
-        for n in graph.neighbors(current):
-            if n == prev or n in all_blob_nodes:
-                continue
-            ek = tuple(sorted((current, n)))
-            if ek in used_edges or ek in used_in_chain:
-                continue
-            if ek not in corridor_edges:
-                continue
-            # Must be blob-adjacent to pass validation
-            if not _is_edge_blob_adjacent(current, n):
-                continue
-            s = 2.0 if n in blob_adjacent else 1.0
-            if s > best_score:
-                best_score = s
-                best_next = n
-        if best_next is None:
-            break
-        chain.insert(0, (best_next, current))
-        used_in_chain.add(tuple(sorted((best_next, current))))
-        prev, current = current, best_next
+    # walk connected components of chain_nodes
+    visited = set()
+    corridors = []
 
-    if len(chain) >= 2:
-        return chain
-    return None
+    for start in chain_nodes:
+        if start in visited:
+            continue
+
+        chain = [start]
+        visited.add(start)
+
+        for direction in (0, 1):
+            current = start
+            while True:
+                nxt = None
+                for nb in graph.neighbors(current):
+                    if nb in chain_nodes and nb not in visited:
+                        nxt = nb
+                        break
+                if nxt is None:
+                    break
+                visited.add(nxt)
+                if direction == 0:
+                    chain.insert(0, nxt)
+                else:
+                    chain.append(nxt)
+                current = nxt
+
+        if len(chain) >= 2:
+            corridors.append(chain)
+
+    return corridors
 
 
-# ---------------------------------------------------------------------------
-#  Main generation
-# ---------------------------------------------------------------------------
+def _place_chokepoints(graph, source, target, blob_set, num_cp, rng):
+    """
+    1. Find corridor chains (sequences of narrow-passage nodes).
+    2. From each corridor, take the last 2-3 edges as chokepoints.
+    """
+    corridors = _find_corridors(graph, blob_set)
+
+    chokepoints = []
+    for chain in corridors:
+        # edges along this chain
+        edges = []
+        for i in range(len(chain) - 1):
+            u, v = chain[i], chain[i + 1]
+            if graph.has_edge(u, v):
+                edges.append((u, v))
+
+        if len(edges) == 0:
+            continue
+
+        # take last 2-3 edges of the corridor
+        n_take = min(3, len(edges))
+        chunk = edges[-n_take:]
+
+        for e in chunk:
+            chokepoints.append(e)
+
+    # deduplicate
+    seen = set()
+    unique = []
+    for u, v in chokepoints:
+        ek = tuple(sorted((u, v)))
+        if ek not in seen:
+            seen.add(ek)
+            unique.append((u, v))
+
+    # cap at num_cp, shuffle to spread if we have too many
+    if len(unique) > num_cp:
+        rng.shuffle(unique)
+        unique = unique[:num_cp]
+
+    return unique
+
+
+# ── main entry point ──────────────────────────────────────────────────────
 
 def generate_corridor_map(grid_size=12, num_blobs=4, blob_coverage=0.45,
                           num_chokepoints=18, block_prob=0.5, seed=None):
-    """
-    Generates a map by growing blobs from random centers.
-
-    Only blob-boundary edges are removed. The corridor network (all edges
-    between non-blob nodes) stays fully 4-connected.
-    """
     rng = np.random.RandomState(seed)
-    source = (0, 0)
-    target = (grid_size - 1, grid_size - 1)
+    source, target = (0, 0), (grid_size - 1, grid_size - 1)
 
-    # Step 1: Sample blob centers
+    # 1 centres → 2 grow → build HeightMapGrid
     centers = _sample_centers(grid_size, num_blobs, source, target, rng)
-
-    # Step 2: Grow blobs from centers
-    blobs = _grow_blobs(grid_size, centers, blob_coverage, source, target, rng)
-
+    blobs   = _grow_blobs(grid_size, centers, blob_coverage, source, target, rng)
     if len(blobs) < 2:
-        raise ValueError("Not enough blobs grown.")
+        raise ValueError("Too few blobs grown")
 
-    all_blob_set = set()
-    for blob in blobs:
-        all_blob_set.update(blob)
+    blob_set = set(n for b in blobs for n in b)
 
-    # Step 3: Create HeightMapGrid
-    map_gen = HeightMapGrid(m=grid_size, n=grid_size)
-    for blob in blobs:
-        map_gen.add_plataeu(blob)
-    map_gen.calculate_distances()
-    map_gen.calculate_simple_visibility(blobs)
+    hmap = HeightMapGrid(m=grid_size, n=grid_size)
+    for b in blobs:
+        hmap.add_plataeu(b)
+    hmap.calculate_distances()
+    hmap.calculate_simple_visibility(blobs)
 
-    # Only remove blob-boundary edges (one endpoint blob, one corridor).
-    # DO NOT remove corridor-corridor edges.
-    edges_to_remove = []
-    for u, v in list(map_gen.G.edges()):
-        u_blob = u in all_blob_set
-        v_blob = v in all_blob_set
-        # Boundary edge: exactly one endpoint is a blob node
-        if u_blob != v_blob:
-            edges_to_remove.append((u, v))
-
-    removed_attrs = {}
-    for u, v in edges_to_remove:
-        if map_gen.G.has_edge(u, v):
+    # 3 remove boundary edges, re-add 2-3 per blob
+    removed = {}                       # sorted_edge → attrs
+    for u, v in list(hmap.G.edges()):
+        if (u in blob_set) != (v in blob_set):
             ek = tuple(sorted((u, v)))
-            removed_attrs[ek] = dict(map_gen.G.edges[u, v])
-            map_gen.G.remove_edge(u, v)
+            removed[ek] = dict(hmap.G.edges[u, v])
+            hmap.G.remove_edge(u, v)
 
-    # Step 4: Re-add 2-3 entry edges per blob
-    blob_boundary = {}
-    for ek, attrs in removed_attrs.items():
+    per_blob_boundary = {}             # blob_idx → [sorted_edge, …]
+    for ek in removed:
         u, v = ek
-        u_blob = u in all_blob_set
-        blob_node = u if u_blob else v
-        for bi, blob in enumerate(blobs):
-            if blob_node in set(blob):
-                blob_boundary.setdefault(bi, []).append(ek)
+        blob_node = u if u in blob_set else v
+        for bi, b in enumerate(blobs):
+            if blob_node in set(b):
+                per_blob_boundary.setdefault(bi, []).append(ek)
                 break
 
-    for bi, edges in blob_boundary.items():
-        blob_size = len(blobs[bi])
-        num_entries = 2 if blob_size < 12 else 3
-        num_entries = min(num_entries, len(edges))
+    for bi, edges in per_blob_boundary.items():
+        n_entries = 2 if len(blobs[bi]) < 12 else 3
+        n_entries = min(n_entries, len(edges))
+        for e in _pick_entries(edges, blob_set, n_entries):
+            u, v = e
+            if not hmap.G.has_edge(u, v):
+                hmap.G.add_edge(u, v, **removed[e])
 
-        if num_entries == 0:
-            continue
+    if not nx.has_path(hmap.G, source, target):
+        raise ValueError("Graph disconnected after blob construction")
 
-        chosen = _pick_spread_entries(edges, all_blob_set, num_entries)
-        for edge in chosen:
-            u, v = edge
-            if not map_gen.G.has_edge(u, v):
-                map_gen.G.add_edge(u, v, **removed_attrs[edge])
+    # 3b fix diagonal disconnects
+    _fix_diagonal_disconnects(hmap.G, blob_set, blobs, grid_size)
 
-    # Verify connectivity
-    if not nx.has_path(map_gen.G, source, target):
-        raise ValueError("Graph disconnected after construction.")
+    # refresh visibility (prune edges that no longer exist)
+    hmap.calculate_simple_visibility(blobs)
+    for node in hmap.G.nodes():
+        vis = hmap.G.nodes[node].get("visible_edges", [])
+        hmap.G.nodes[node]["visible_edges"] = [
+            e for e in vis
+            if hmap.G.has_edge(e[0], e[1]) or hmap.G.has_edge(e[1], e[0])
+        ]
 
-    # Recompute visibility (filter out removed edges)
-    map_gen.calculate_simple_visibility(blobs)
-    for node in map_gen.G.nodes():
-        if "visible_edges" in map_gen.G.nodes[node]:
-            vis = map_gen.G.nodes[node]["visible_edges"]
-            map_gen.G.nodes[node]["visible_edges"] = [
-                e for e in vis
-                if map_gen.G.has_edge(e[0], e[1]) or map_gen.G.has_edge(e[1], e[0])
-            ]
+    env_graph = hmap.get_graph()
 
-    env_graph = map_gen.get_graph()
-
-    # Step 5: Compute corridor_edges = all edges between non-blob nodes
-    corridor_edges = set()
-    for u, v in env_graph.edges():
-        if u not in all_blob_set and v not in all_blob_set:
-            corridor_edges.add(tuple(sorted((u, v))))
-
-    # Step 6: Place chokepoints
-    chokepoints = _find_chokepoints(
-        env_graph, source, target, all_blob_set, corridor_edges,
-        num_chokepoints=num_chokepoints, rng=rng,
-        min_path_fraction=0.30
-    )
-
-    valid_chokepoints = []
+    # 4 chokepoints
+    chokepoints = _place_chokepoints(env_graph, source, target, blob_set,
+                                     num_chokepoints, rng)
+    # ensure edge attrs
     for u, v in chokepoints:
-        if env_graph.has_edge(u, v):
-            if 'distance' not in env_graph.edges[u, v]:
-                h_u = env_graph.nodes[u]['height']
-                h_v = env_graph.nodes[v]['height']
-                env_graph.edges[u, v]['distance'] = 1.0 + 2.0 * abs(h_u - h_v)
-            if 'observed_edge' not in env_graph.edges[u, v]:
-                env_graph.edges[u, v]['observed_edge'] = False
-            valid_chokepoints.append((u, v))
+        e = env_graph.edges[u, v]
+        if "distance" not in e:
+            h_u = env_graph.nodes[u]["height"]
+            h_v = env_graph.nodes[v]["height"]
+            e["distance"] = 1.0 + 2.0 * abs(h_u - h_v)
+        if "observed_edge" not in e:
+            e["observed_edge"] = False
 
     return {
-        'env_graph': env_graph,
-        'blobs': blobs,
-        'chokepoints': valid_chokepoints,
-        'source': source,
-        'target': target,
-        'block_prob': block_prob,
-        'seed': seed,
-        'grid_size': grid_size,
+        "env_graph":    env_graph,
+        "blobs":        blobs,
+        "chokepoints":  chokepoints,
+        "source":       source,
+        "target":       target,
+        "block_prob":   block_prob,
+        "seed":         seed,
+        "grid_size":    grid_size,
     }
 
 
-# ---------------------------------------------------------------------------
-#  Validation
-# ---------------------------------------------------------------------------
+# ── validation (lightweight) ──────────────────────────────────────────────
 
-def _validate_map(map_data, min_chokepoints=6, min_cp_coverage=0.5,
-                  num_blockage_trials=30, min_sp_cost_cv=0.03):
-    g = map_data['env_graph']
-    s, t = map_data['source'], map_data['target']
-    chokepoints = map_data['chokepoints']
-    block_prob = map_data.get('block_prob', 0.5)
+def _validate_map(map_data, min_cp=6, blockage_trials=30, min_cv=0.03):
+    g  = map_data["env_graph"]
+    s, t = map_data["source"], map_data["target"]
+    cps  = map_data["chokepoints"]
+    bp   = map_data.get("block_prob", 0.5)
 
-    if not nx.has_path(g, s, t):
-        return False
-    if len(chokepoints) < min_chokepoints:
+    if not nx.has_path(g, s, t) or len(cps) < min_cp:
         return False
 
-    all_blob_nodes = set()
-    for blob in map_data['blobs']:
-        all_blob_nodes.update(blob)
+    blob_set = set(n for b in map_data["blobs"] for n in b)
 
-    # Every CP must be spatially adjacent to a blob
-    for u, v in chokepoints:
-        u_adj = any((u[0] + dr, u[1] + dc) in all_blob_nodes
-                    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)])
-        v_adj = any((v[0] + dr, v[1] + dc) in all_blob_nodes
-                    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)])
-        if not u_adj and not v_adj:
-            return False
-
-    # SP should mostly avoid blobs
+    # SP shouldn't mostly go through blobs
     sp = nx.shortest_path(g, s, t, weight="distance")
-    blob_frac = sum(1 for n in sp if n in all_blob_nodes) / len(sp)
-    if blob_frac > 0.3:
+    if sum(1 for n in sp if n in blob_set) / len(sp) > 0.3:
         return False
 
-    # Chokepoint coverage
-    cp_set = set(tuple(sorted(e)) for e in chokepoints)
-    temp_g = g.copy()
-    paths_through_cp = 0
-    total_paths = 0
-    for _ in range(10):
-        try:
-            p = nx.shortest_path(temp_g, s, t, weight="distance")
-            total_paths += 1
-            path_edges = set(tuple(sorted((p[i], p[i + 1])))
-                             for i in range(len(p) - 1))
-            if path_edges & cp_set:
-                paths_through_cp += 1
-            for i in range(len(p) - 1):
-                u, v = p[i], p[i + 1]
-                if temp_g.has_edge(u, v):
-                    temp_g.edges[u, v]['distance'] *= 3.0
-        except nx.NetworkXNoPath:
-            break
-    if total_paths == 0:
-        return False
-    if (paths_through_cp / total_paths) < min_cp_coverage:
-        return False
-
-    # Blockage impact
-    rng_val = np.random.RandomState(map_data.get('seed', 0) + 9999)
-    sp_costs = []
-    baseline_sp = nx.shortest_path(g, s, t, weight="distance")
-    baseline_cost = sum(g.edges[baseline_sp[i], baseline_sp[i + 1]]['distance']
-                        for i in range(len(baseline_sp) - 1))
-    total_detours = 0
-    for _ in range(num_blockage_trials):
-        edges_to_remove = []
-        rolls = rng_val.rand(len(chokepoints))
-        for i, edge in enumerate(chokepoints):
-            if rolls[i] < block_prob:
-                u, v = edge
-                if g.has_edge(u, v):
-                    edges_to_remove.append((u, v))
-                elif g.has_edge(v, u):
-                    edges_to_remove.append((v, u))
-        if not edges_to_remove:
-            sp_costs.append(baseline_cost)
+    # blockage impact: we need variance in SP costs
+    rng = np.random.RandomState((map_data.get("seed", 0) or 0) + 9999)
+    baseline = sum(g.edges[sp[i], sp[i+1]]["distance"] for i in range(len(sp) - 1))
+    costs = []
+    for _ in range(blockage_trials):
+        to_rm = [(u, v) for (u, v), r in zip(cps, rng.rand(len(cps)))
+                 if r < bp and g.has_edge(u, v)]
+        if not to_rm:
+            costs.append(baseline)
             continue
-        blocked_g = g.copy()
-        blocked_g.remove_edges_from(edges_to_remove)
-        if not nx.has_path(blocked_g, s, t):
+        bg = g.copy()
+        bg.remove_edges_from(to_rm)
+        if not nx.has_path(bg, s, t):
             continue
         try:
-            blocked_sp = nx.shortest_path(blocked_g, s, t, weight="distance")
-            cost = sum(blocked_g.edges[blocked_sp[i], blocked_sp[i + 1]]['distance']
-                       for i in range(len(blocked_sp) - 1))
-            sp_costs.append(cost)
-            if cost > baseline_cost + 0.5:
-                total_detours += 1
-        except (nx.NetworkXNoPath, KeyError):
+            bsp = nx.shortest_path(bg, s, t, weight="distance")
+            costs.append(sum(bg.edges[bsp[i], bsp[i+1]]["distance"]
+                             for i in range(len(bsp) - 1)))
+        except Exception:
             continue
 
-    if len(sp_costs) < num_blockage_trials // 2:
+    if len(costs) < blockage_trials // 2:
         return False
-    sp_arr = np.array(sp_costs)
-    if np.mean(sp_arr) <= 0:
+    arr = np.array(costs)
+    if arr.mean() <= 0 or arr.std() / arr.mean() < min_cv:
         return False
-    cv = np.std(sp_arr) / np.mean(sp_arr)
-    if cv < min_sp_cost_cv:
-        return False
-    if total_detours < 2:
-        return False
-
     return True
 
 
-# ---------------------------------------------------------------------------
-#  Suite generation
-# ---------------------------------------------------------------------------
+# ── suite generation ──────────────────────────────────────────────────────
 
 def generate_map_suite(num_maps=50, seed_start=1000):
-    maps = []
     configs = [
-        # (grid_size, num_blobs, blob_coverage, num_chokepoints, block_prob, label)
+        # (grid_size, num_blobs, coverage, num_cp, block_prob, label)
         (12, 4, 0.45, 18, 0.50, "standard_12x12"),
         (12, 4, 0.45, 21, 0.50, "dense_cp_12x12"),
         (14, 4, 0.43, 18, 0.50, "standard_14x14"),
@@ -757,97 +487,48 @@ def generate_map_suite(num_maps=50, seed_start=1000):
         (16, 5, 0.40, 21, 0.40, "lowblock_16x16"),
         (14, 6, 0.43, 18, 0.50, "six_blobs_14x14"),
     ]
-    maps_per_config = max(1, num_maps // len(configs))
-    remainder = num_maps - maps_per_config * len(configs)
+    per_cfg = max(1, num_maps // len(configs))
+    remainder = num_maps - per_cfg * len(configs)
 
-    map_id = 0
-    for cfg_idx, (gs, nb, bc, nc, bp, label) in enumerate(configs):
-        count = maps_per_config + (1 if cfg_idx < remainder else 0)
-        generated = 0
-        attempts = 0
-        max_attempts = count * 100
-        while generated < count and attempts < max_attempts:
-            seed = seed_start + map_id
-            attempts += 1
+    maps = []
+    mid = 0
+    for ci, (gs, nb, bc, nc, bp, label) in enumerate(configs):
+        need = per_cfg + (1 if ci < remainder else 0)
+        got, tries = 0, 0
+        while got < need and tries < need * 100:
+            seed = seed_start + mid
+            tries += 1
             try:
-                map_data = generate_corridor_map(
-                    grid_size=gs, num_blobs=nb, blob_coverage=bc,
-                    num_chokepoints=nc, block_prob=bp, seed=seed
-                )
-                map_data['label'] = label
-                map_data['map_id'] = map_id
-                if _validate_map(map_data):
-                    maps.append(map_data)
-                    generated += 1
-                map_id += 1
+                md = generate_corridor_map(grid_size=gs, num_blobs=nb,
+                                           blob_coverage=bc, num_chokepoints=nc,
+                                           block_prob=bp, seed=seed)
+                md["label"], md["map_id"] = label, mid
+                if _validate_map(md):
+                    maps.append(md)
+                    got += 1
             except Exception:
-                map_id += 1
-                continue
+                pass
+            mid += 1
     return maps
 
 
+# ── quick smoke test ──────────────────────────────────────────────────────
+
 if __name__ == "__main__":
-    map_data = generate_corridor_map(grid_size=12, num_blobs=4, seed=42)
-    g = map_data['env_graph']
+    md = generate_corridor_map(grid_size=12, num_blobs=4, seed=42)
+    g = md["env_graph"]
+    blob_set = set(n for b in md["blobs"] for n in b)
+    gs = md["grid_size"]
 
-    all_blob_nodes = set()
-    for blob in map_data['blobs']:
-        all_blob_nodes.update(blob)
-
-    gs = map_data['grid_size']
-    print(f"Grid: {gs}x{gs}")
+    print(f"Grid:  {gs}×{gs}")
     print(f"Nodes: {g.number_of_nodes()}, Edges: {g.number_of_edges()}")
-    print(f"Blob nodes: {len(all_blob_nodes)} "
-          f"({len(all_blob_nodes) / g.number_of_nodes() * 100:.1f}%)")
-    print(f"Blobs: {len(map_data['blobs'])}, "
-          f"sizes: {sorted([len(b) for b in map_data['blobs']], reverse=True)}")
-    print(f"Chokepoints: {len(map_data['chokepoints'])}")
+    print(f"Blobs: {len(md['blobs'])}, "
+          f"sizes: {sorted((len(b) for b in md['blobs']), reverse=True)}")
+    print(f"Blob nodes: {len(blob_set)} "
+          f"({len(blob_set)/g.number_of_nodes()*100:.0f}%)")
+    print(f"Chokepoints: {len(md['chokepoints'])}")
 
-    # Entry edges per blob
-    for bi, blob in enumerate(map_data['blobs']):
-        bset = set(blob)
-        entry_count = 0
-        for u, v in g.edges():
-            u_in = u in bset
-            v_in = v in bset
-            if u_in != v_in and (u_in or v_in):
-                entry_count += 1
-        print(f"  Blob {bi} (size={len(blob)}): {entry_count} entries")
-
-    # Total entry edges
-    entry = sum(1 for u, v in g.edges()
-                if (u in all_blob_nodes) != (v in all_blob_nodes))
-    print(f"Total entry edges: {entry}")
-
-    # Spatial blob adjacency
-    blob_adj = set()
-    for r, c in all_blob_nodes:
-        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            nr, nc = r + dr, c + dc
-            if 0 <= nr < gs and 0 <= nc < gs and (nr, nc) not in all_blob_nodes:
-                blob_adj.add((nr, nc))
-    non_blob = g.number_of_nodes() - len(all_blob_nodes)
-    print(f"Corridor nodes spatially adj to blob: {len(blob_adj)}/{non_blob} "
-          f"({len(blob_adj) / non_blob * 100:.0f}%)")
-
-    # CP adjacency
-    cp_adj = sum(1 for u, v in map_data['chokepoints']
-                 if any((u[0]+dr, u[1]+dc) in all_blob_nodes
-                        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)])
-                 or any((v[0]+dr, v[1]+dc) in all_blob_nodes
-                        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]))
-    print(f"Chokepoints adj to blob: {cp_adj}/{len(map_data['chokepoints'])}")
-
-    sp = nx.shortest_path(g, map_data['source'], map_data['target'],
-                          weight="distance")
-    sp_len = sum(g.edges[sp[i], sp[i+1]]['distance'] for i in range(len(sp)-1))
-    print(f"SP: length={sp_len:.0f}, hops={len(sp)-1}")
-
-    dist_from_source = nx.single_source_dijkstra_path_length(
-        g, map_data['source'], weight='distance')
-    for u, v in map_data['chokepoints']:
-        d = min(dist_from_source.get(u, 0), dist_from_source.get(v, 0))
-        frac = d / sp_len if sp_len > 0 else 0
-        print(f"  CP ({u},{v}): dist={d:.1f}, frac={frac:.2f}")
-
-    print(f"\nValid: {_validate_map(map_data)}")
+    sp = nx.shortest_path(g, md["source"], md["target"], weight="distance")
+    sp_len = sum(g.edges[sp[i], sp[i+1]]["distance"] for i in range(len(sp)-1))
+    print(f"SP cost: {sp_len:.1f}, hops: {len(sp)-1}")
+    print(f"Valid: {_validate_map(md)}")

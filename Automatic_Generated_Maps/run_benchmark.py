@@ -353,7 +353,8 @@ def main():
 
         remaining = args.num_maps - len(maps)
         print(f"Screening (need {remaining} more maps)...")
-        screened = screen_maps(candidates, target_count=remaining)
+        # screened = screen_maps(candidates, target_count=remaining)
+        screened = candidates
         maps.extend(screened)
         print(f"Batch {batch_num}: {len(screened)} passed, total: {len(maps)}/{args.num_maps}")
 
