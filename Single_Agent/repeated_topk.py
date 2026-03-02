@@ -283,7 +283,7 @@ class RepeatedTopK:
                     best_path = d_path
             t_reward = time.perf_counter() - t_reward
 
-            return best_path, num_samples, t_sample, t_reward
+            return best_path
     
 
     
@@ -338,7 +338,7 @@ class RepeatedTopK:
 
             # print(f"Processing section from {begin_node} to {end_node}")
 
-            section_best_path, num_samples, t_sample, t_reward = self.process_section(begin_node, end_node)
+            section_best_path = self.process_section(begin_node, end_node)
 
             # Append the section best path, avoiding duplication of nodes at the end
             if len(best_path) > 0 and best_path[-1] == section_best_path[0]:
@@ -362,7 +362,7 @@ class RepeatedTopK:
         # print(f"Original Hamiltonian Path Reward: {original_path_reward}")
         # print(f"Best Path Reward: {best_path_reward}")
 
-        return best_path, num_samples, t_sample, t_reward
+        return best_path
             
 
 

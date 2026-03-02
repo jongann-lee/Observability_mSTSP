@@ -36,7 +36,7 @@ def main():
 
     # Generate maps -- generate_map_suite already does structural validation
     # but we skip analytic scoring / pruning entirely
-    maps = generate_map_suite(num_maps=10, seed_start=3000)
+    maps = generate_map_suite(num_maps=50, seed_start=3000)
     print(f"Generated {len(maps)} structurally valid maps\n")
 
     # Benchmark all maps

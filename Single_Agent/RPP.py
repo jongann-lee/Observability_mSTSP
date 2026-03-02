@@ -26,7 +26,7 @@ def get_conditional_entropy(Y, observation_node, realizations, env_graph):
 
     cond_entropy = 0.0
     for outcome, indices in outcomes.items():
-        prob_outcome = sum(realizations[i]['prob'] for i in Y) / total_prob_Y
+        prob_outcome = sum(realizations[i]['prob'] for i in indices) / total_prob_Y
         # Entropy of the subset of realizations consistent with this outcome
         subset_probs = [realizations[i]['prob'] for i in indices]
         norm_subset_probs = [p / sum(subset_probs) for p in subset_probs]

@@ -4,6 +4,7 @@ from tqdm import tqdm
 import time
 import random
 import itertools
+import pickle
 
 from Graph_Generation.height_graph_generation import HeightMapGrid
 from Graph_Generation.target_graph import create_fully_connected_target_graph
@@ -78,7 +79,19 @@ edge_list_4 = [((7,10), (7,11)), ((8,10), (8,11)), ((9,10), (9,11)),
 edge_list = edge_list_1 + edge_list_2 + edge_list_3 + edge_list_4
 map_generator.remove_edges(edge_list)
 
-env_graph = map_generator.get_graph()
+# env_graph = map_generator.get_graph()
+
+#IF YOU ARE USING THE SAVED MAP
+with open('Automatic_Generated_Maps/top_bottom_maps.pkl', 'rb') as f:
+    data = pickle.load(f)
+
+top3 = data['top3']      # list of (map_data, improvement_pct)
+bottom3 = data['bottom3']  # list of (map_data, improvement_pct)
+md_top, imp_top = top3[0]
+md_bottom, imp_bottom = bottom3[0]
+
+
+env_graph = md_top['env_graph']
 
 target_recursion = 4
 target_num_obstacles = 4
@@ -97,6 +110,19 @@ chokepoints_list = [((7,11), (8,11)), ((8,11), (9,11)), ((9,11), (10,11)),
                     ((0,4), (0,5)), ((0,5), (0,6)), ((0,6), (0,7)),
                     ((5,3), (5,4)), ((5,4), (5,5)), ((5,5), (6,5)),
                     ((11,2), (11,3)), ((11,3), (11,4)), ((11,4), (11,5))]
+
+# chokepoints_list = md_top['chokepoints']
+
+chokepoints_list=[((9,0), (10,0)),
+                  ((8,5), (9,5)),
+                  ((9,9), (10,9)),
+                  ((0,12), (0,13)),
+                  ((6,13), (6,14)),
+                  ((4,15), (5,15)),
+                  ((8,15), (9,15)),
+                  ((13,15), (14,15))
+
+]
 
 # chokepoints_list = [((9,11), (10,11)),
 #                     ((11,9), (11,10)),
@@ -235,7 +261,7 @@ for run_idx in tqdm(range(num_runs)):
 
     elif use_our_agent:
         env_graph2 = env_graph.copy() # Agent's world model (doesn't know any edges are blocked)
-        path2_generator = RepeatedTopK(reward_ratio = 1.5, env_graph=env_graph2, target_graph=target_graph,
+        path2_generator = RepeatedTopK(reward_ratio = 10.0, env_graph=env_graph2, target_graph=target_graph,
                                        sample_recursion=4, sample_num_obstacle=4, sample_obstacle_hop=1)
 
         path_2 = path2_generator.find_best_path() # Start with the best path
@@ -321,7 +347,7 @@ for run_idx in tqdm(range(num_runs)):
         chokepoints = chokepoints_list
                 
         source_node = (0,0)
-        target_node = (11,11)
+        target_node = (15,15)
         edge_block_prob = edge_block_prob
 
         for bits in itertools.product([0, 1], repeat=len(chokepoints)):
@@ -356,6 +382,13 @@ for run_idx in tqdm(range(num_runs)):
         current_tree_node = (current_belief_indices, source_node)
         current_node = source_node
 
+        # Edges open in ALL realizations are known safe from the start
+        confirmed_safe_edges = set(
+            e for e in env_graph4.edges()
+            if all(e in r['edges'] for r in realizations)  # open in ALL realizations = never uncertain
+        )
+
+
         agent4_travel_distance = 0.0
 
         while True:
@@ -378,19 +411,30 @@ for run_idx in tqdm(range(num_runs)):
             next_tree_state = successors[0]
             target_env_vertex = next_tree_state[1] 
 
-            # 3. Step-by-step traversal along the "Leg" [cite: 235, 262]
-            leg_path = nx.shortest_path(blocked_env_graph, current_node, target_env_vertex, weight="distance")
+            # *** CHANGE: Plan leg only on confirmed safe edges ***
+            safe_subgraph = env_graph4.edge_subgraph(confirmed_safe_edges)
+            try:
+                leg_path = nx.shortest_path(safe_subgraph, current_node, target_env_vertex, weight="distance")
+            except nx.NetworkXNoPath:
+                print(f"No confirmed-safe path from {current_node} to {target_env_vertex}. Agent is stuck.")
+                break
             
+            # *** CHANGE: Check each step for blocked edges before committing ***
             for next_step in leg_path[1:]:
+                if not blocked_env_graph.has_edge(current_node, next_step):
+                    # Discovered a blocked edge mid-leg — stop here
+                    print(f"Blocked edge ({current_node}, {next_step}) discovered mid-leg.")
+                    confirmed_safe_edges.discard((current_node, next_step))
+                    confirmed_safe_edges.discard((next_step, current_node))
+                    break
                 distance = blocked_env_graph.edges[current_node, next_step]["distance"]
-                # print(f"RPP Agent moving from {current_node} to {next_step}, distance: {distance:.2f}")
                 agent4_travel_distance += distance
                 current_node = next_step
 
             # 4. Perform Observation and Transition Belief [cite: 152, 252]
             # If we aren't at the goal yet, we must update our belief based on sensors [cite: 153, 231]
             if current_node != target_node:
-                visible_here = env_graph.nodes[current_node].get("visible_edges", [])
+                visible_here = env_graph4.nodes[current_node].get("visible_edges", [])
                 actual_outcome = tuple(sorted(
                     [e for e in visible_here if blocked_env_graph.has_edge(*e)],
                     key=lambda x: (x[0], x[1])
