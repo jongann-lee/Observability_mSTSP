@@ -1,10 +1,11 @@
-# Uncertain Edge TSP
+# Navigating Uncertain Environments with Heterogeneous Visibility
 
-Solvers for the Traveling Salesman Problem under edge-existence uncertainty. An agent must visit a set of target nodes on a graph where certain edges may be blocked with some probability. The agent only discovers blockages when it reaches a node with line-of-sight visibility to the affected edge, and must replan on the fly.
+Codebase for the paper 'Navigating Uncertain Environments with Heterogeneous Visibility'.
 
 Two agents are compared:
 - **Shortest Path (SP) Agent** — plans via shortest paths and replans when a blockage is discovered.
-- **RepeatedTopK Agent** — uses a visibility-aware reward function to proactively route through informative edges, reducing expected travel cost.
+- **RPP Agent** - plans using the reactive path problem method by Macdonald et al.
+- **Our Agent** — uses a visibility-aware reward function to proactively route through informative edges, reducing expected travel cost.
 
 ## Requirements
 
@@ -24,19 +25,23 @@ pip install -r requirements.txt
 ├── Graph_Generation/       # Graph construction, visibility, edge blocking, target graph
 ├── Single_Agent/           # Agent algorithms (RepeatedTopK, LKH TSP, RPP, reward functions)
 ├── Multi_Agent_TSP/        # Multi-agent TSP solver (experimental)
-├── Automatic_Generated_Maps/  # Auto-generated grid map experiments
-├── Real_Life_Maps/         # Real DEM terrain experiments
-├── benchmark.py            # Single-agent plateau benchmark
-├── single_agent_height_grid.ipynb  # Visualization for plateau benchmark
+├── Automatic_Generated_Maps/  # Procedurally generated plateau environments (Section V-B)
+├── Real_Life_Maps/         # Real-world natural terrain environment (Section V-C)
+├── benchmark.py            # Single plateau benchmark (Section V-A, V-D)
+├── single_plateau.ipynb           # Visualization for plateau benchmark
 ├── requirements.txt
 └── README.md
 ```
 
 ## Experiments
 
-### 1. Single Agent Plateau
+### 1. Plateau Environment
 
-A hand-crafted 12x12 (or 16x16) grid map with four mountain plateaus and manually defined chokepoints. Runs the selected agent over many random blockage realizations and reports mean path cost.
+A hand-crafted grid map with four plateaus and manually defined chokepoints. Runs the selected agent over many random blockage realizations and reports mean path cost. Two pre-built maps are provided:
+
+- `plateau_16.pkl` — 16x16 grid, used for Section V-A results
+- `plateau_12.pkl` — 12x12 grid, used for Section V-D results
+
 
 **Run the benchmark:**
 
@@ -56,21 +61,21 @@ Other settings (`num_runs`, `edge_block_prob`, target graph parameters) can also
 
 **Visualize results:**
 
-Open `single_agent_height_grid.ipynb` in Jupyter to visualize the plateau map, agent trajectories, and edge usage.
+Open `single_plateau.ipynb` in Jupyter to visualize the plateau map, agent trajectories, and edge usage.
 
 ```bash
-jupyter notebook single_agent_height_grid.ipynb
+jupyter notebook single_plateau.ipynb
 ```
 
-### 2. Automatically Generated Maps
+### 2. Procedurally Generated Environment
 
-Generates a suite of random grid maps with procedural blobs (plateaus) and chokepoints, then benchmarks both agents on each map.
+Generates a suite of maps with procedural blobs (plateaus) and chokepoints, then benchmarks both agents on each map.
 
 **Run the benchmark:**
 
 ```bash
 cd Automatic_Generated_Maps
-python run_benchmark.py [OPTIONS]
+python proc_gen_benchmark.py [OPTIONS]
 ```
 
 Options:
@@ -78,9 +83,10 @@ Options:
 |------|---------|-------------|
 | `--num-maps` | 50 | Number of maps to generate and benchmark |
 | `--num-runs` | 200 | Blockage realizations per map |
-| `--seed-start` | 1000 | Starting random seed for map generation |
+| `--seed-start` | 3000 | Starting random seed for map generation |
 | `--output` | `benchmark_results.csv` | Per-map results CSV |
 | `--output-summary` | `benchmark_summary.json` | Aggregate summary JSON |
+| `--output-maps` | `top_bottom_maps.pkl` | Top 3 / bottom 3 maps by improvement |
 
 **Visualize maps:**
 
@@ -88,7 +94,7 @@ Open `Automatic_Generated_Maps/visualize_maps.ipynb` to inspect individual gener
 
 Open `Automatic_Generated_Maps/benchmark_histograms.ipynb` to view histograms and summary statistics from benchmark results.
 
-### 3. Real Life Maps (DEM Terrain)
+### 3. Natural Terrain Environment
 
 Uses a real Digital Elevation Model (DEM) GeoTIFF to build a terrain graph where edge costs reflect elevation changes. Obstacle ovals are placed along the shortest path to create chokepoints.
 

@@ -1,8 +1,14 @@
 """
-Benchmark runner for automatically generated maps.
+Benchmark runner for procedurally generated maps.
 
-Runs the RepeatedTopK agent and Shortest Path agent on each generated map
-across multiple random blockage realizations, then saves results to CSV.
+Generates maps, benchmarks the RepeatedTopK agent and Shortest Path agent on
+each map across multiple random blockage realizations, saves per-map results
+to CSV, and pickles the top 3 / bottom 3 maps by improvement percentage.
+
+Outputs:
+  - benchmark_results.csv: Per-map benchmark results
+  - benchmark_summary.json: Aggregate summary statistics
+  - top_bottom_maps.pkl: Top 3 and bottom 3 maps by improvement percentage
 """
 
 import sys
@@ -10,7 +16,9 @@ import os
 import time
 import json
 import csv
+import pickle
 import argparse
+import random
 
 import numpy as np
 import networkx as nx
@@ -29,7 +37,6 @@ if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
 from map_generator import generate_map_suite
-from analytic_prune import prune_maps, score_map
 
 
 def run_shortest_path_agent(env_graph, blocked_env_graph, hamiltonian_target_path, source, target):
@@ -196,8 +203,6 @@ def benchmark_single_map(map_data, num_runs=200, target_recursion=4,
     block_prob = map_data['block_prob']
 
     # Create target graph
-    # NOTE: create_fully_connected_target_graph modifies env_graph in-place
-    # to set 'num_used' on edges. This is the same pattern as benchmark.py.
     try:
         target_graph = create_fully_connected_target_graph(
             env_graph,
@@ -226,7 +231,6 @@ def benchmark_single_map(map_data, num_runs=200, target_recursion=4,
 
     for run_idx in range(num_runs):
         np.random.seed(42 + run_idx)
-        import random
         random.seed(42 + run_idx)
 
         # Randomly block chokepoints
@@ -285,6 +289,7 @@ def benchmark_single_map(map_data, num_runs=200, target_recursion=4,
     return {
         'map_id': map_data.get('map_id', -1),
         'label': map_data.get('label', 'unknown'),
+        'seed': map_data.get('seed', -1),
         'grid_size': map_data.get('grid_size', -1),
         'block_prob': block_prob,
         'num_blobs': len(map_data.get('blobs', [])),
@@ -297,121 +302,79 @@ def benchmark_single_map(map_data, num_runs=200, target_recursion=4,
     }
 
 
-def screen_maps(candidates, screen_runs=50, target_count=None):
-    """
-    Phase 1: Analytic screening of candidate maps using structural scores.
-    No simulation required -- uses graph properties to predict which maps
-    will favor the visibility-aware agent.
-    """
-    print(f"  Scoring {len(candidates)} candidates analytically...")
-    scored = prune_maps(candidates, target_count=target_count, verbose=False)
-    screened = []
-    for map_data, score, components in scored:
-        label = map_data.get('label', '?')
-        seed = map_data.get('seed', '?')
-        print(f"  Map (seed={seed}, {label}): score={score:.2f} "
-              f"[vis={components['cp_visibility']:.2f}, "
-              f"detour={components['detour_near_blob']:.2f}, "
-              f"entry={components['entry_efficiency']:.2f}, "
-              f"impact={components['cp_impact']:.2f}, "
-              f"diversity={components['path_diversity']:.2f}]")
-        screened.append(map_data)
-    return screened
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Run benchmarks on auto-generated maps")
+    parser = argparse.ArgumentParser(
+        description="Benchmark agents on procedurally generated maps"
+    )
     parser.add_argument("--num-maps", type=int, default=50,
-                        help="Number of maps to benchmark")
+                        help="Number of maps to generate and benchmark")
     parser.add_argument("--num-runs", type=int, default=200,
                         help="Number of blockage realizations per map")
-    parser.add_argument("--seed-start", type=int, default=1000,
+    parser.add_argument("--seed-start", type=int, default=3000,
                         help="Starting seed for map generation")
     parser.add_argument("--output", type=str, default="benchmark_results.csv",
                         help="Output CSV filename")
     parser.add_argument("--output-summary", type=str, default="benchmark_summary.json",
                         help="Output summary JSON filename")
-    parser.add_argument("--screen-runs", type=int, default=50,
-                        help="(Deprecated) Screening now uses analytic scores")
+    parser.add_argument("--output-maps", type=str, default="top_bottom_maps.pkl",
+                        help="Output pkl for top/bottom maps")
     args = parser.parse_args()
 
     output_dir = os.path.dirname(os.path.abspath(__file__))
     output_csv = os.path.join(output_dir, args.output)
     output_json = os.path.join(output_dir, args.output_summary)
+    output_pkl = os.path.join(output_dir, args.output_maps)
 
-    # Generate candidates in batches and screen until we have enough
-    maps = []
-    batch_size = args.num_maps * 3
-    current_seed = args.seed_start
-    batch_num = 0
+    # Generate maps
+    print(f"\nGenerating {args.num_maps} maps (seed_start={args.seed_start})...")
+    maps = generate_map_suite(num_maps=args.num_maps, seed_start=args.seed_start)
+    print(f"Generated {len(maps)} structurally valid maps")
 
-    while len(maps) < args.num_maps:
-        batch_num += 1
-        print(f"\n--- Batch {batch_num}: Generating {batch_size} candidates (seed_start={current_seed}) ---")
-        candidates = generate_map_suite(num_maps=batch_size, seed_start=current_seed)
-        print(f"Generated {len(candidates)} structurally valid maps")
+    # Benchmark all maps
+    all_results = []  # (map_data, improvement_pct, result_dict)
 
-        remaining = args.num_maps - len(maps)
-        print(f"Screening (need {remaining} more maps)...")
-        # screened = screen_maps(candidates, target_count=remaining)
-        screened = candidates
-        maps.extend(screened)
-        print(f"Batch {batch_num}: {len(screened)} passed, total: {len(maps)}/{args.num_maps}")
-
-        current_seed += batch_size * 10  # Advance seed range
-
-        if batch_num >= 5:
-            print("Maximum batches reached, proceeding with available maps.")
-            break
-
-    print(f"\nPhase 2: Running full benchmark on {len(maps)} maps with {args.num_runs} runs each...")
-
-    # CSV header
     csv_fields = [
-        'map_id', 'label', 'grid_size', 'block_prob', 'num_blobs',
+        'map_id', 'label', 'seed', 'grid_size', 'block_prob', 'num_blobs',
         'num_chokepoints', 'valid_runs',
         'sp_mean', 'sp_std', 'our_mean', 'our_std',
         'improvement_pct', 'our_wins_pct',
         'sp_avg_runtime', 'our_avg_runtime'
     ]
 
-    all_results = []
-
     with open(output_csv, 'w', newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=csv_fields)
         writer.writeheader()
 
         for i, map_data in enumerate(tqdm(maps, desc="Benchmarking maps")):
-            print(f"\n--- Map {i+1}/{len(maps)}: {map_data.get('label', '?')} "
-                  f"(id={map_data.get('map_id', '?')}, "
-                  f"grid={map_data.get('grid_size', '?')}x{map_data.get('grid_size', '?')}, "
-                  f"blobs={len(map_data.get('blobs', []))}, "
-                  f"chokepoints={len(map_data.get('chokepoints', []))}) ---")
+            label = map_data.get('label', '?')
+            seed = map_data.get('seed', '?')
 
             result = benchmark_single_map(map_data, num_runs=args.num_runs)
 
             if 'error' in result:
-                print(f"  ERROR: {result['error']}")
+                print(f"  Map {i} ({label}, seed={seed}): ERROR: {result['error']}")
                 continue
 
             if result['valid_runs'] == 0:
-                print(f"  No valid runs (all blockage configs disconnected the graph)")
+                print(f"  Map {i} ({label}, seed={seed}): SKIPPED (no valid runs)")
                 continue
 
             sp_mean = np.mean(result['sp_costs'])
             sp_std = np.std(result['sp_costs'])
             our_mean = np.mean(result['our_costs'])
             our_std = np.std(result['our_costs'])
-            improvement_pct = ((sp_mean - our_mean) / sp_mean) * 100 if sp_mean > 0 else 0
+            improvement_pct = ((sp_mean - our_mean) / sp_mean) * 100 if sp_mean > 0 else 0.0
 
-            # Count per-run wins
             wins = sum(1 for s, o in zip(result['sp_costs'], result['our_costs']) if o < s)
-            ties = sum(1 for s, o in zip(result['sp_costs'], result['our_costs']) if o == s)
-            our_wins_pct = (wins / result['valid_runs']) * 100
+            win_pct = (wins / result['valid_runs']) * 100
 
+            all_results.append((map_data, improvement_pct, result))
+
+            # Write CSV row
             row = {
                 'map_id': result['map_id'],
                 'label': result['label'],
+                'seed': result['seed'],
                 'grid_size': result['grid_size'],
                 'block_prob': result['block_prob'],
                 'num_blobs': result['num_blobs'],
@@ -422,78 +385,93 @@ def main():
                 'our_mean': f"{our_mean:.2f}",
                 'our_std': f"{our_std:.2f}",
                 'improvement_pct': f"{improvement_pct:.2f}",
-                'our_wins_pct': f"{our_wins_pct:.1f}",
+                'our_wins_pct': f"{win_pct:.1f}",
                 'sp_avg_runtime': f"{np.mean(result['sp_runtimes']):.4f}",
                 'our_avg_runtime': f"{np.mean(result['our_runtimes']):.4f}",
             }
             writer.writerow(row)
             csvfile.flush()
 
-            all_results.append(result)
+            print(f"  Map {i:2d} ({label:20s}, seed={seed:5d}): "
+                  f"improvement={improvement_pct:+6.2f}%, "
+                  f"win_rate={win_pct:4.1f}%, "
+                  f"SP={sp_mean:.1f}, Ours={our_mean:.1f}")
 
-            print(f"  Valid runs: {result['valid_runs']}/{args.num_runs}")
-            print(f"  SP  mean: {sp_mean:.2f} +/- {sp_std:.2f}")
-            print(f"  Our mean: {our_mean:.2f} +/- {our_std:.2f}")
-            print(f"  Improvement: {improvement_pct:.2f}%, Win rate: {our_wins_pct:.1f}%")
+    # Sort by improvement
+    all_results.sort(key=lambda x: -x[1])  # Best first
 
-    # Aggregate summary
-    if all_results:
-        all_sp = []
-        all_ours = []
-        for r in all_results:
-            all_sp.extend(r['sp_costs'])
-            all_ours.extend(r['our_costs'])
+    print("\n" + "=" * 60)
+    print(f"Completed {len(all_results)} maps")
+    print("=" * 60)
 
-        total_wins = sum(1 for s, o in zip(all_sp, all_ours) if o < s)
-        total_ties = sum(1 for s, o in zip(all_sp, all_ours) if o == s)
-        total_losses = sum(1 for s, o in zip(all_sp, all_ours) if o > s)
-        total_runs = len(all_sp)
+    if len(all_results) == 0:
+        print("No valid results!")
+        return
 
-        # Per-map improvement stats
-        map_improvements = []
-        for r in all_results:
-            sp_m = np.mean(r['sp_costs'])
-            our_m = np.mean(r['our_costs'])
-            if sp_m > 0:
-                map_improvements.append(((sp_m - our_m) / sp_m) * 100)
+    improvements = [r[1] for r in all_results]
+    print(f"Mean improvement: {np.mean(improvements):.2f}%")
+    print(f"Median improvement: {np.median(improvements):.2f}%")
+    print(f"Std improvement: {np.std(improvements):.2f}%")
+    print(f"Maps with positive improvement: {sum(1 for x in improvements if x > 0)}/{len(all_results)}")
 
-        summary = {
-            'total_maps': len(all_results),
-            'total_runs': total_runs,
-            'overall_sp_mean': float(np.mean(all_sp)),
-            'overall_our_mean': float(np.mean(all_ours)),
-            'overall_improvement_pct': float(((np.mean(all_sp) - np.mean(all_ours)) / np.mean(all_sp)) * 100),
-            'total_wins': total_wins,
-            'total_ties': total_ties,
-            'total_losses': total_losses,
-            'win_rate_pct': float(total_wins / total_runs * 100) if total_runs > 0 else 0,
-            'maps_with_positive_improvement': sum(1 for x in map_improvements if x > 0),
-            'mean_per_map_improvement_pct': float(np.mean(map_improvements)) if map_improvements else 0,
-            'median_per_map_improvement_pct': float(np.median(map_improvements)) if map_improvements else 0,
-            'std_per_map_improvement_pct': float(np.std(map_improvements)) if map_improvements else 0,
-        }
+    # Top 3 best and worst
+    top3 = all_results[:3]
+    bottom3 = all_results[-3:]
 
-        with open(output_json, 'w') as f:
-            json.dump(summary, f, indent=2)
+    print("\nTop 3 BEST maps:")
+    for i, (md, imp, _) in enumerate(top3):
+        print(f"  {i+1}. seed={md.get('seed')}, label={md.get('label')}, "
+              f"improvement={imp:+.2f}%")
 
-        print("\n" + "=" * 60)
-        print("AGGREGATE RESULTS")
-        print("=" * 60)
-        print(f"Total maps benchmarked: {summary['total_maps']}")
-        print(f"Total valid runs:       {summary['total_runs']}")
-        print(f"Overall SP mean cost:   {summary['overall_sp_mean']:.2f}")
-        print(f"Overall Our mean cost:  {summary['overall_our_mean']:.2f}")
-        print(f"Overall improvement:    {summary['overall_improvement_pct']:.2f}%")
-        print(f"Win/Tie/Loss:           {total_wins}/{total_ties}/{total_losses}")
-        print(f"Win rate:               {summary['win_rate_pct']:.1f}%")
-        print(f"Maps w/ improvement:    {summary['maps_with_positive_improvement']}/{summary['total_maps']}")
-        print(f"Mean per-map improvement: {summary['mean_per_map_improvement_pct']:.2f}%")
-        print(f"Median per-map improvement: {summary['median_per_map_improvement_pct']:.2f}%")
-        print("=" * 60)
-        print(f"\nResults saved to: {output_csv}")
-        print(f"Summary saved to: {output_json}")
-    else:
-        print("\nNo successful results to summarize.")
+    print("\nTop 3 WORST maps:")
+    for i, (md, imp, _) in enumerate(bottom3):
+        print(f"  {i+1}. seed={md.get('seed')}, label={md.get('label')}, "
+              f"improvement={imp:+.2f}%")
+
+    # Save top/bottom maps pkl
+    save_data = {
+        'top3': [(md, imp) for md, imp, _ in top3],
+        'bottom3': [(md, imp) for md, imp, _ in bottom3],
+        'all_improvements': improvements,
+    }
+    with open(output_pkl, 'wb') as f:
+        pickle.dump(save_data, f)
+    print(f"\nSaved top/bottom maps to: {output_pkl}")
+
+    # Aggregate summary JSON
+    all_sp = []
+    all_ours = []
+    for _, _, r in all_results:
+        all_sp.extend(r['sp_costs'])
+        all_ours.extend(r['our_costs'])
+
+    total_wins = sum(1 for s, o in zip(all_sp, all_ours) if o < s)
+    total_ties = sum(1 for s, o in zip(all_sp, all_ours) if o == s)
+    total_losses = sum(1 for s, o in zip(all_sp, all_ours) if o > s)
+    total_runs = len(all_sp)
+
+    summary = {
+        'total_maps': len(all_results),
+        'total_runs': total_runs,
+        'overall_sp_mean': float(np.mean(all_sp)),
+        'overall_our_mean': float(np.mean(all_ours)),
+        'overall_improvement_pct': float(((np.mean(all_sp) - np.mean(all_ours)) / np.mean(all_sp)) * 100),
+        'total_wins': total_wins,
+        'total_ties': total_ties,
+        'total_losses': total_losses,
+        'win_rate_pct': float(total_wins / total_runs * 100) if total_runs > 0 else 0,
+        'maps_with_positive_improvement': sum(1 for x in improvements if x > 0),
+        'mean_per_map_improvement_pct': float(np.mean(improvements)),
+        'median_per_map_improvement_pct': float(np.median(improvements)),
+        'std_per_map_improvement_pct': float(np.std(improvements)),
+    }
+
+    with open(output_json, 'w') as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"\nResults saved to: {output_csv}")
+    print(f"Summary saved to: {output_json}")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

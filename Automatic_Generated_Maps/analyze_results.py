@@ -1,7 +1,7 @@
 """
 Statistical analysis of benchmark results.
 
-Reads the CSV output from run_benchmark.py and produces:
+Reads the CSV output from proc_gen_benchmark.py and produces:
 1. Summary statistics tables (printed and saved)
 2. Per-category breakdowns
 3. Statistical significance tests (paired t-test, Wilcoxon)
@@ -309,7 +309,7 @@ def generate_latex_table(results, categories):
 def main():
     parser = argparse.ArgumentParser(description="Analyze benchmark results")
     parser.add_argument("--input", type=str, default="benchmark_results.csv",
-                        help="Input CSV file from run_benchmark.py")
+                        help="Input CSV file from proc_gen_benchmark.py")
     parser.add_argument("--output-latex", type=str, default="results_table.tex",
                         help="Output LaTeX table file")
     parser.add_argument("--output-stats", type=str, default="statistical_tests.json",
@@ -320,7 +320,7 @@ def main():
     csv_path = os.path.join(input_dir, args.input)
 
     if not os.path.exists(csv_path):
-        print(f"Error: {csv_path} not found. Run run_benchmark.py first.")
+        print(f"Error: {csv_path} not found. Run proc_gen_benchmark.py first.")
         sys.exit(1)
 
     results = load_results(csv_path)
