@@ -2,8 +2,6 @@ import numpy as np
 import networkx as nx
 import itertools
 
-from .kspd import approximate_KSPD
-
 
 ### These are all the functions for creating a target only graph and calculating the shortest paths
 
