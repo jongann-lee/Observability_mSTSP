@@ -309,9 +309,13 @@ def stochastic_accumulated_blockage_path(graph: nx.Graph, source, target,
                                 num_obstacles_per_path=2, 
                                 obstacle_hop=2):
     """
-    Generates diverse paths by creating a tree of alternatives,
-    where each obstacle creates a separate branch that inherits
-    the parent's blocked edges.
+    Generates paths by creating a tree of alternatives, where each obstacle
+    creates a separate branch that inherits the parent's blocked edges.
+
+    Each feasible obstacle sample is retained as its own tree node. Therefore,
+    the returned list may contain duplicate paths when different obstacle
+    histories produce the same shortest path. These duplicates preserve the
+    sampling frequency used by downstream edge-relevance calculations.
 
     Returns: List of (path, depth) tuples where depth indicates recursion level
     """
@@ -323,7 +327,6 @@ def stochastic_accumulated_blockage_path(graph: nx.Graph, source, target,
         return []
 
     collected_paths = [(initial_path, 0)]  # Store (path, depth) tuples
-    seen_paths = {tuple(initial_path)}
     
     # Queue of (path, graph_state, depth) to process
     queue = [(initial_path, graph.copy(), 0)]
@@ -385,14 +388,13 @@ def stochastic_accumulated_blockage_path(graph: nx.Graph, source, target,
             # --- FIND NEW PATH ---
             try:
                 new_path = nx.shortest_path(graph_copy, source=source, target=target, weight='distance')
-                new_path_tuple = tuple(new_path)
-                
-                if new_path_tuple not in seen_paths:
-                    seen_paths.add(new_path_tuple)
-                    collected_paths.append((new_path, depth + 1))  # Store with depth
-                    # Add to queue with the MODIFIED graph for next generation
-                    queue.append((new_path, graph_copy, depth + 1))
-                    
+                # Keep every feasible branch, even if another obstacle history
+                # produced the same node sequence. A duplicate path is still a
+                # distinct sample and should contribute separately to relevance.
+                collected_paths.append((new_path, depth + 1))
+                # Continue from this branch's own accumulated obstacle state.
+                queue.append((new_path, graph_copy, depth + 1))
+
             except nx.NetworkXNoPath:
                 pass
     
